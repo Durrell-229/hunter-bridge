@@ -41,6 +41,19 @@ test('convertMessages traduit texte user/assistant', () => {
   ]);
 });
 
+test('convertMessages fusionne les blocs texte user en une chaîne', () => {
+  const messages = convertMessages([
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: 'Premier bloc' },
+        { type: 'text', text: 'Second bloc' },
+      ],
+    },
+  ]);
+  assert.deepEqual(messages, [{ role: 'user', content: 'Premier bloc\n\nSecond bloc' }]);
+});
+
 test('convertMessages traduit tool_use puis tool_result en tool_calls/tool', () => {
   const messages = convertMessages([
     {
@@ -105,6 +118,21 @@ test('convertMessages marque les erreurs d’outil et gère plusieurs résultats
   assert.equal(messages[2].content, 'ok');
 });
 
+test('convertMessages remplace un tool_result vide par un marqueur', () => {
+  const messages = convertMessages([
+    {
+      role: 'assistant',
+      content: [{ type: 'tool_use', id: 'x', name: 'Bash', input: { command: 'true' } }],
+    },
+    {
+      role: 'user',
+      content: [{ type: 'tool_result', tool_use_id: 'x', content: '' }],
+    },
+  ]);
+  assert.equal(messages[1].role, 'tool');
+  assert.equal(messages[1].content, '[empty tool result]');
+});
+
 test('convertMessages traduit les images base64 en image_url', () => {
   const messages = convertMessages([
     {
@@ -137,6 +165,22 @@ test('convertTools expose les outils custom et ignore les outils serveur', () =>
   assert.equal(tools[0].type, 'function');
   assert.equal(tools[0].function.name, 'Read');
   assert.equal(tools[0].function.parameters.properties.file_path.type, 'string');
+});
+
+test('convertTools normalise les schémas et retire $schema', () => {
+  const tools = convertTools([
+    {
+      name: 'A',
+      input_schema: {
+        $schema: 'http://json-schema.org/draft-07/schema#',
+        type: 'object',
+        properties: {},
+      },
+    },
+    { name: 'B', input_schema: {} },
+  ]);
+  assert.equal(tools[0].function.parameters.$schema, undefined);
+  assert.deepEqual(tools[1].function.parameters, { type: 'object', properties: {} });
 });
 
 test('convertToolChoice traduit auto/any/tool/none', () => {
@@ -240,6 +284,23 @@ test('groqToAnthropicMessage traduit texte, usage et stop_reason', () => {
   assert.equal(message.usage.output_tokens, 7);
 });
 
+test('groqToAnthropicMessage estime l’usage absent', () => {
+  const message = groqToAnthropicMessage(
+    {
+      choices: [
+        {
+          message: { role: 'assistant', content: 'Bonjour' },
+          finish_reason: 'stop',
+        },
+      ],
+    },
+    { requestedModel: 'claude-sonnet-4-5', inputTokens: 42 },
+  );
+
+  assert.equal(message.usage.input_tokens, 42);
+  assert.ok(message.usage.output_tokens > 0);
+});
+
 test('groqToAnthropicMessage traduit les tool_calls', () => {
   const message = groqToAnthropicMessage(
     {
@@ -301,7 +362,8 @@ test('groqToAnthropicMessage gère les arguments JSON invalides et les réponses
 
 test('mapStopReason et parseToolArguments', () => {
   assert.equal(mapStopReason('length', false), 'max_tokens');
-  assert.equal(mapStopReason('tool_calls', false), 'tool_use');
+  assert.equal(mapStopReason('tool_calls', true), 'tool_use');
+  assert.equal(mapStopReason('tool_calls', false), 'end_turn');
   assert.equal(mapStopReason('stop', true), 'tool_use');
   assert.equal(mapStopReason('stop', false), 'end_turn');
   assert.deepEqual(parseToolArguments('{"a":1}'), { a: 1 });

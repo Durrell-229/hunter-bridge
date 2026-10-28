@@ -96,6 +96,8 @@ export function normalizeGroqBaseUrl(raw) {
   }
   if (url === 'https://api.groq.com' || url === 'http://api.groq.com') {
     url += '/openai/v1';
+  } else if (url === 'https://api.groq.com/openai' || url === 'http://api.groq.com/openai') {
+    url += '/v1';
   }
   return url;
 }

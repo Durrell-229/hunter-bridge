@@ -1,7 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { buildConfig, parseAllowedHosts, publicConfig } from '../src/config.js';
-import { parseEnvFile } from '../src/env.js';
+import { loadEnvFile, parseEnvFile } from '../src/env.js';
 import { normalizeGroqBaseUrl } from '../src/util.js';
 
 test('parseEnvFile gère commentaires, export, quotes et échappements', () => {
@@ -19,6 +22,20 @@ VIDE=
   assert.equal(parsed.PORT, '9000');
   assert.equal(parsed.MULTI, 'ligne1\nligne2');
   assert.equal(parsed.VIDE, '');
+});
+
+test('loadEnvFile remplit une variable présente mais vide', () => {
+  const file = path.join(os.tmpdir(), `groqcc-env-${process.pid}-${Date.now()}.env`);
+  const key = 'GROQCC_TEST_EMPTY_VALUE';
+  fs.writeFileSync(file, `${key}=depuis-le-fichier\n`);
+  process.env[key] = '';
+  try {
+    assert.equal(loadEnvFile(file), true);
+    assert.equal(process.env[key], 'depuis-le-fichier');
+  } finally {
+    delete process.env[key];
+    fs.unlinkSync(file);
+  }
 });
 
 test('buildConfig applique les défauts et les overrides', () => {
@@ -88,6 +105,7 @@ test('normalizeGroqBaseUrl normalise les URLs Groq', () => {
     normalizeGroqBaseUrl('https://api.groq.com/openai/v1/chat/completions'),
     'https://api.groq.com/openai/v1',
   );
+  assert.equal(normalizeGroqBaseUrl('https://api.groq.com/openai'), 'https://api.groq.com/openai/v1');
   assert.equal(normalizeGroqBaseUrl('http://127.0.0.1:1234/v1'), 'http://127.0.0.1:1234/v1');
 });
 

@@ -71,11 +71,16 @@ La commande la plus simple démarre le proxy sur un port libre, puis lance Claud
 npm run claude
 ```
 
-Pour passer des arguments à Claude Code, utilise le séparateur `--` :
+Pour passer des arguments à Claude Code, ajoute-les après le nom de la commande :
 
 ```bash
-./bin/groqcc.js claude -- --resume
+npm run claude -- --resume
+npm run claude -- --model sonnet
+# ou directement
+./bin/groqcc.js claude --resume
 ```
+
+Les options du proxy (`--port`, `--host`, `--model openai/...`) se placent avant les arguments de Claude Code. Une valeur de `--model` qui ressemble à un modèle Claude (`sonnet`, `opus`, `haiku`, `claude-...`) est transmise à Claude Code ; pour choisir le modèle Groq, utilise plutôt `GROQ_MODEL` dans `.env`.
 
 ### Mode deux terminaux
 
@@ -154,9 +159,9 @@ PROXY_API_KEY=un-jeton-local
 
 ```bash
 export ANTHROPIC_AUTH_TOKEN='un-jeton-local'
-# ou
-export ANTHROPIC_API_KEY='un-jeton-local'
 ```
+
+Le proxy accepte aussi `x-api-key` / `ANTHROPIC_API_KEY`, mais évite de définir les deux variables à la fois : Claude Code peut signaler un conflit d'authentification. `npm run claude` utilise uniquement `ANTHROPIC_AUTH_TOKEN`.
 
 ---
 
@@ -167,14 +172,21 @@ export ANTHROPIC_API_KEY='un-jeton-local'
 ```bash
 ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
 ANTHROPIC_AUTH_TOKEN=<jeton local>
-ANTHROPIC_API_KEY=<jeton local>
 ANTHROPIC_MODEL=claude-sonnet-4-5
 ANTHROPIC_SMALL_FAST_MODEL=claude-3-5-haiku-latest
 ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-5
 ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-4-5
 ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-3-5-haiku-latest
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=32768
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=131072
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=114688
+API_TIMEOUT_MS=900000
+CLAUDE_CODE_ATTRIBUTION_HEADER=0
+ENABLE_TOOL_SEARCH=false
 CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ```
+
+`CLAUDE_CODE_MAX_CONTEXT_TOKENS` déclare à Claude Code la vraie fenêtre du modèle Groq. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` est calculé avec une marge de 16 384 tokens (par exemple 114 688 pour 131 072) pour que Claude Code compacte avant d'atteindre la limite de Groq. `CLAUDE_CODE_MAX_OUTPUT_TOKENS` est borné par la limite du modèle et `MAX_OUTPUT_TOKENS`. `ENABLE_TOOL_SEARCH=false` charge les outils MCP dès le départ : le tool search de Claude Code n'est pas traduit vers Groq.
 
 Le proxy traduit ensuite ces noms vers `GROQ_MODEL` / `GROQ_SMALL_MODEL`.
 
@@ -211,7 +223,7 @@ src/errors.js       erreurs normalisées Anthropic
 - **Pas de blocs `thinking` en retour** : le budget de réflexion est traduit en `reasoning_effort` pour les modèles qui le supportent, mais Claude Code ne reçoit pas de blocs de raisonnement signés.
 - **Outils serveur Anthropic ignorés** : `web_search`, `computer`, etc. ne sont pas exécutés par Groq. Les outils custom et MCP sont transmis.
 - **Images** : envoyées en `image_url` ; seuls les modèles Groq vision les acceptent.
-- **PDF / documents** : remplacés par un marqueur texte, pas extraits.
+- **Documents** : les documents texte sont transmis ; les PDF base64/URL sont remplacés par un marqueur, pas extraits.
 - **Qualité du tool use** : dépend du modèle Groq. `openai/gpt-oss-120b` est le choix par défaut.
 - **Contexte et sortie** : `max_tokens` est borné par le modèle et par la place restante estimée dans le contexte.
 - **Streaming des tool_calls** : les appels d'outils sont bufferisés puis émis en fin de message. Claude Code les reçoit correctement, mais pas token par token.

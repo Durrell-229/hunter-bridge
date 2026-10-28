@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { buildConfig } from '../src/config.js';
 import { checkSecretFilePermissions, findEnvFile, loadEnvFile } from '../src/env.js';
 import { listGroqModels, simpleChat } from '../src/groq.js';
-import { KNOWN_MODELS } from '../src/models.js';
+import { contextFor, KNOWN_MODELS, maxOutputFor } from '../src/models.js';
 import { closeServer, createBridgeServer, createLogger, listen } from '../src/server.js';
 import { maskKey, redactSecrets } from '../src/util.js';
 import { SERVICE, VERSION } from '../src/version.js';
@@ -56,7 +56,7 @@ async function main() {
 
   let opts;
   try {
-    opts = parseArgs(argv);
+    opts = parseArgs(argv, command);
   } catch (error) {
     console.error(`Erreur : ${error.message}`);
     process.exitCode = 2;
@@ -119,7 +119,7 @@ async function main() {
   }
 }
 
-function parseArgs(argv) {
+function parseArgs(argv, command = 'start') {
   const opts = { rest: [] };
   let index = 0;
 
@@ -164,9 +164,17 @@ function parseArgs(argv) {
       case '--host':
         opts.host = takeValue();
         break;
-      case '--model':
-        opts.model = takeValue();
+      case '--model': {
+        const value = takeValue();
+        // `claude --model sonnet` doit passer le flag à Claude Code, pas
+        // choisir un modèle Groq nommé "sonnet".
+        if (command === 'claude' && looksLikeClaudeModel(value)) {
+          opts.rest.push('--model', value);
+        } else {
+          opts.model = value;
+        }
         break;
+      }
       case '--small-model':
         opts.smallModel = takeValue();
         break;
@@ -188,12 +196,28 @@ function parseArgs(argv) {
       case '--api-key':
         throw new Error('utilise GROQ_API_KEY dans .env, jamais une clé en argument de commande');
       default:
+        if (command === 'claude') {
+          // Tout ce qui suit est destiné à Claude Code (ex. --resume, --model).
+          opts.rest.push(...argv.slice(index));
+          index = argv.length;
+          break;
+        }
         throw new Error(`option inconnue : ${name}`);
     }
     index += 1;
   }
 
   return opts;
+}
+
+function looksLikeClaudeModel(value) {
+  const model = String(value || '').toLowerCase();
+  if (!model) return false;
+  if (['default', 'best', 'fable', 'sonnet', 'opus', 'haiku', 'opusplan'].includes(model)) {
+    return true;
+  }
+  if (model.endsWith('[1m]')) return true;
+  return model.startsWith('claude-') || model.includes('claude');
 }
 
 async function start(config) {
@@ -236,7 +260,9 @@ async function runClaude(config, opts) {
   const childConfig = {
     ...config,
     port,
-    logLevel: process.env.LOG_LEVEL || 'warn',
+    // LOG_LEVEL=info dans .env est utile pour `npm start`, mais trop bavard
+    // dans le terminal de Claude Code. Utiliser GROQCC_LOG_LEVEL pour forcer.
+    logLevel: process.env.GROQCC_LOG_LEVEL || 'warn',
   };
   const server = createBridgeServer(childConfig, { logger: createLogger(childConfig.logLevel) });
 
@@ -395,7 +421,7 @@ async function doctor(config, opts, envFile) {
   }
   if (!config.apiKey) {
     console.log('\n  Prochaine étape :');
-    console.log('    cp .env.example .env');
+    if (!envFile) console.log('    cp .env.example .env');
     console.log('    # édite GROQ_API_KEY dans .env (ne colle pas la clé dans le chat)');
     console.log('    npm run doctor -- --chat');
   }
@@ -458,21 +484,75 @@ function printEnv(config, opts) {
 }
 
 function claudeEnv(config, baseUrl) {
-  return { ...process.env, ...claudeEnvVars(config, baseUrl) };
+  const env = { ...process.env, ...claudeEnvVars(config, baseUrl) };
+
+  // On ne garde qu'ANTHROPIC_AUTH_TOKEN : définir aussi ANTHROPIC_API_KEY
+  // peut déclencher un conflit d'authentification dans Claude Code.
+  delete env.ANTHROPIC_API_KEY;
+
+  // Ces variables feraient router Claude Code vers Bedrock/Vertex/Foundry
+  // au lieu de notre proxy local.
+  for (const key of [
+    'CLAUDE_CODE_USE_BEDROCK',
+    'CLAUDE_CODE_USE_VERTEX',
+    'CLAUDE_CODE_USE_FOUNDRY',
+    'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'ANTHROPIC_BEDROCK_BASE_URL',
+    'ANTHROPIC_VERTEX_BASE_URL',
+    'ANTHROPIC_FOUNDRY_BASE_URL',
+    'ANTHROPIC_AWS_BASE_URL',
+  ]) {
+    delete env[key];
+  }
+
+  env.NO_PROXY = env.NO_PROXY || '127.0.0.1,localhost,::1';
+  env.no_proxy = env.NO_PROXY;
+  return env;
 }
 
 function claudeEnvVars(config, baseUrl, { maskSecret = false } = {}) {
   const authToken =
     config.proxyApiKey && maskSecret ? '<ton PROXY_API_KEY>' : config.proxyApiKey || 'local-groq-bridge';
+  const modelMax = maxOutputFor(config.model, config);
+  const requestedMax = Number.parseInt(process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS ?? '', 10);
+  const maxOutput =
+    Number.isFinite(requestedMax) && requestedMax > 0
+      ? Math.min(requestedMax, modelMax)
+      : modelMax;
+  const contextWindow = contextFor(config.model);
+  // Marge de 16k tokens pour l'écart entre le tokenizer de Claude Code et
+  // celui de Groq, et pour les outils ajoutés à chaque requête.
+  const autoCompact = Math.max(100000, Math.min(contextWindow - 16384, 1000000));
+  const noProxy = [
+    ...new Set(
+      `${process.env.NO_PROXY || process.env.no_proxy || ''},127.0.0.1,localhost,::1`
+        .split(/[,\s]+/)
+        .filter(Boolean),
+    ),
+  ].join(',');
+
   return {
     ANTHROPIC_BASE_URL: baseUrl,
+    NO_PROXY: noProxy,
     ANTHROPIC_AUTH_TOKEN: authToken,
-    ANTHROPIC_API_KEY: authToken,
     ANTHROPIC_MODEL: config.claudeModel,
+    // ANTHROPIC_SMALL_FAST_MODEL est déprécié, mais encore lu par les
+    // anciennes versions de Claude Code.
     ANTHROPIC_SMALL_FAST_MODEL: config.claudeSmallModel,
     ANTHROPIC_DEFAULT_SONNET_MODEL: config.claudeModel,
     ANTHROPIC_DEFAULT_OPUS_MODEL: config.claudeModel,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: config.claudeSmallModel,
+    CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutput),
+    // Groq a un contexte plus petit que les modèles Claude : on déclare la
+    // vraie fenêtre et on compacte avec une marge de sécurité.
+    CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow),
+    CLAUDE_CODE_AUTO_COMPACT_WINDOW: String(autoCompact),
+    API_TIMEOUT_MS: String(config.streamTimeoutMs),
+    // Le bloc d'attribution Anthropic n'a aucune utilité chez Groq.
+    CLAUDE_CODE_ATTRIBUTION_HEADER: '0',
+    // Groq ne comprend pas le tool search de Claude Code : on charge les
+    // outils MCP dès le départ et on retire ToolSearch/DeferredToolPlaceholder.
+    ENABLE_TOOL_SEARCH: 'false',
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_TELEMETRY: '1',
     DISABLE_ERROR_REPORTING: '1',

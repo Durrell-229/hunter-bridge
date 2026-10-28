@@ -36,6 +36,29 @@ export function systemToText(system) {
   return textOfBlocks(asBlocks(system));
 }
 
+function sanitizeToolSchema(schema) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return { type: 'object', properties: {} };
+  }
+  let copy;
+  try {
+    copy = JSON.parse(JSON.stringify(schema));
+  } catch {
+    return { type: 'object', properties: {} };
+  }
+  if (!copy || typeof copy !== 'object' || Array.isArray(copy)) {
+    return { type: 'object', properties: {} };
+  }
+  delete copy.$schema;
+  if (!copy.type && !copy.$ref && !copy.anyOf && !copy.oneOf && !copy.allOf) {
+    copy.type = 'object';
+  }
+  if (copy.type === 'object' && (!copy.properties || typeof copy.properties !== 'object')) {
+    copy.properties = {};
+  }
+  return copy;
+}
+
 export function convertTools(tools) {
   if (!Array.isArray(tools) || tools.length === 0) return null;
   const converted = [];
@@ -56,7 +79,7 @@ export function convertTools(tools) {
       function: {
         name: tool.name,
         description: typeof tool.description === 'string' ? tool.description : '',
-        parameters: schema || { type: 'object', properties: {} },
+        parameters: sanitizeToolSchema(schema),
       },
     });
     if (converted.length >= 128) break; // limite Groq
@@ -102,6 +125,14 @@ function toolResultToText(block) {
         if (part?.type === 'text' && typeof part.text === 'string') return part.text;
         if (part?.type === 'image') return '[image]';
         if (part?.type === 'document') return '[document]';
+        if (part?.type === 'resource') {
+          if (typeof part.resource?.text === 'string') return part.resource.text;
+          if (typeof part.resource?.uri === 'string') return `[resource ${part.resource.uri}]`;
+          return '[resource]';
+        }
+        if (part?.type === 'resource_link') {
+          return `[resource ${part.uri || part.name || 'sans URI'}]`;
+        }
         return '';
       })
       .filter(Boolean)
@@ -114,7 +145,19 @@ function toolResultToText(block) {
     }
   }
   if (block.is_error) text = `[tool_error]\n${text}`;
-  return text;
+  // Certains fournisseurs OpenAI-compatibles refusent un contenu vide.
+  return text || '[empty tool result]';
+}
+
+function documentToText(block) {
+  const source = block?.source;
+  if (source?.type === 'text' && typeof source.data === 'string') return source.data;
+  if (source?.type === 'content' && Array.isArray(source.content)) {
+    const text = textOfBlocks(source.content);
+    if (text) return text;
+  }
+  const mediaType = source?.media_type ? ` ${source.media_type}` : '';
+  return `[document${mediaType}]`;
 }
 
 function imageToOpenAiPart(block) {
@@ -199,8 +242,7 @@ export function convertMessages(messages) {
           const image = imageToOpenAiPart(block);
           contentParts.push(image || { type: 'text', text: '[image]' });
         } else if (block.type === 'document') {
-          const mediaType = block.source?.media_type ? ` ${block.source.media_type}` : '';
-          contentParts.push({ type: 'text', text: `[document${mediaType}]` });
+          contentParts.push({ type: 'text', text: documentToText(block) });
         }
       }
 
@@ -210,8 +252,13 @@ export function convertMessages(messages) {
       out.push(...toolMessages);
 
       if (contentParts.length) {
-        if (contentParts.length === 1 && contentParts[0].type === 'text') {
-          out.push({ role: 'user', content: contentParts[0].text });
+        // Pour un message purement texte, une simple chaîne est plus
+        // compatible que le tableau de content parts (Groq, vieux proxys).
+        if (contentParts.every((part) => part.type === 'text')) {
+          out.push({
+            role: 'user',
+            content: contentParts.map((part) => part.text).join('\n\n'),
+          });
         } else {
           out.push({ role: 'user', content: contentParts });
         }
@@ -395,7 +442,9 @@ export function mapUsage(usage) {
 
 export function mapStopReason(finishReason, hasTools = false) {
   if (finishReason === 'length') return 'max_tokens';
-  if (finishReason === 'tool_calls' || finishReason === 'function_call') return 'tool_use';
+  if (finishReason === 'tool_calls' || finishReason === 'function_call') {
+    return hasTools ? 'tool_use' : 'end_turn';
+  }
   if (finishReason === 'content_filter') return 'end_turn';
   if (hasTools) return 'tool_use';
   return 'end_turn';
@@ -431,6 +480,18 @@ export function groqToAnthropicMessage(json, meta = {}) {
   if (content.length === 0) content.push({ type: 'text', text: '' });
 
   const hasTools = content.some((block) => block.type === 'tool_use');
+  const usage = mapUsage(json?.usage);
+  if (!usage.input_tokens && Number(meta.inputTokens) > 0) {
+    usage.input_tokens = Number(meta.inputTokens);
+  }
+  if (!usage.output_tokens) {
+    const toolText = content
+      .filter((block) => block.type === 'tool_use')
+      .map((block) => JSON.stringify(block.input))
+      .join('');
+    usage.output_tokens = estimateTokens(text + toolText);
+  }
+
   return {
     id: meta.messageId || newId('msg_'),
     type: 'message',
@@ -439,7 +500,7 @@ export function groqToAnthropicMessage(json, meta = {}) {
     content,
     stop_reason: mapStopReason(choice.finish_reason, hasTools),
     stop_sequence: null,
-    usage: mapUsage(json?.usage),
+    usage,
   };
 }
 
@@ -480,7 +541,11 @@ export async function streamGroqToAnthropic(upstream, writer, meta = {}) {
   for await (const chunk of upstream) {
     if (chunk?.error) {
       const message = chunk.error.message || chunk.error.type || 'Erreur Groq pendant le stream';
-      throw new BridgeError(message, { status: 502, type: 'api_error' });
+      const rateLimited = /rate|quota|limit/i.test(String(chunk.error.type || ''));
+      throw new BridgeError(message, {
+        status: rateLimited ? 429 : 502,
+        type: rateLimited ? 'rate_limit_error' : 'api_error',
+      });
     }
 
     if (chunk?.usage) state.usage = chunk.usage;
@@ -489,8 +554,9 @@ export async function streamGroqToAnthropic(upstream, writer, meta = {}) {
     if (!choice) continue;
 
     const delta = choice.delta || {};
+    const contentText = extractMessageText(delta.content);
 
-    if (typeof delta.content === 'string' && delta.content.length > 0) {
+    if (contentText.length > 0) {
       if (!state.textOpen) {
         state.textIndex = state.nextIndex++;
         state.textOpen = true;
@@ -499,16 +565,17 @@ export async function streamGroqToAnthropic(upstream, writer, meta = {}) {
           content_block: { type: 'text', text: '' },
         });
       }
-      state.text += delta.content;
+      state.text += contentText;
       writer.event('content_block_delta', {
         index: state.textIndex,
-        delta: { type: 'text_delta', text: delta.content },
+        delta: { type: 'text_delta', text: contentText },
       });
     }
 
     if (Array.isArray(delta.tool_calls)) {
       for (const toolCall of delta.tool_calls) {
-        const index = Number.isInteger(toolCall.index) ? toolCall.index : 0;
+        const rawIndex = Number(toolCall.index);
+        const index = Number.isInteger(rawIndex) ? rawIndex : 0;
         let acc = state.toolCalls.get(index);
         if (!acc) {
           acc = { id: null, name: '', arguments: '' };

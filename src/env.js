@@ -44,7 +44,11 @@ export function loadEnvFile(file, { override = false } = {}) {
   if (!file || !fs.existsSync(file)) return false;
   const parsed = parseEnvFile(fs.readFileSync(file, 'utf8'));
   for (const [key, value] of Object.entries(parsed)) {
-    if (override || process.env[key] === undefined) process.env[key] = value;
+    // Une variable définie mais vide dans le shell ne doit pas empêcher
+    // .env de fournir la valeur (cas fréquent : export GROQ_API_KEY=).
+    if (override || process.env[key] === undefined || process.env[key] === '') {
+      process.env[key] = value;
+    }
   }
   return true;
 }

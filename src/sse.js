@@ -1,11 +1,15 @@
+import { StringDecoder } from 'node:string_decoder';
+
 /**
  * Parseur SSE tolérant : gère les events séparés par \n\n ou \r\n\r\n,
  * les data: multi-lignes, les commentaires et la sentinelle [DONE].
  */
 export async function* parseSse(stream) {
+  const decoder = new StringDecoder('utf8');
   let buffer = '';
   for await (const chunk of stream) {
-    buffer += typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8');
+    // StringDecoder préserve les caractères UTF-8 coupés entre deux chunks.
+    buffer += decoder.write(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
     buffer = buffer.replace(/\r\n/g, '\n');
     // Un \r isolé est un séparateur de ligne SSE valide.
     buffer = buffer.replace(/\r(?!\n)/g, '\n');
@@ -19,6 +23,7 @@ export async function* parseSse(stream) {
       if (parsed !== null) yield parsed;
     }
   }
+  buffer += decoder.end();
 
   const tail = buffer.trim();
   if (tail) {
@@ -70,7 +75,8 @@ export class SseWriter {
   }
 
   end() {
-    if (this.closed) return;
+    // Même si un write a échoué (this.closed), on tente de fermer la réponse
+    // pour ne pas laisser une connexion ouverte.
     this.closed = true;
     try {
       if (this.res && !this.res.destroyed && !this.res.writableEnded) this.res.end();

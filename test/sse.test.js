@@ -37,6 +37,15 @@ test('parseSse accepte les data multi-lignes et les buffers', async () => {
   assert.deepEqual(events, [{ a: 1 }]);
 });
 
+test('parseSse préserve un caractère UTF-8 coupé entre deux chunks', async () => {
+  const frame = Buffer.from('data: {"text":"é😀"}\n\n', 'utf8');
+  const split = frame.indexOf(Buffer.from('é', 'utf8')) + 1;
+  const input = chunks(frame.subarray(0, split), frame.subarray(split));
+  const events = [];
+  for await (const event of parseSse(input)) events.push(event);
+  assert.deepEqual(events, [{ text: 'é😀' }]);
+});
+
 test('parseSse ignore un JSON malformé sans casser le flux', async () => {
   const input = chunks('data: {nope}\n\n', 'data: {"ok":true}\n\n');
   const events = [];
