@@ -108,6 +108,13 @@ async function handleRequest(req, res, config, log, startedAt) {
     return;
   }
 
+  // Sonde de préchauffage de connexion envoyée par Claude Code.
+  if (path === '/api/hello' && req.method === 'HEAD') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end();
+    return;
+  }
+
   if (path === '/health' && req.method === 'GET') {
     sendJson(res, 200, {
       ok: true,

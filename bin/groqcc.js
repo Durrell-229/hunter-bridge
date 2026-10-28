@@ -381,10 +381,16 @@ async function doctor(config, opts, envFile) {
 
   if (opts.chat && config.apiKey) {
     try {
+      const reasoningEffort = KNOWN_MODELS[config.model]?.reasoning?.includes('low')
+        ? 'low'
+        : undefined;
       const response = await simpleChat(config, {
         model: config.model,
         prompt: 'Réponds uniquement : OK',
-        maxTokens: 8,
+        // gpt-oss est un modèle de raisonnement : 8 tokens peuvent être
+        // entièrement consommés avant le contenu visible.
+        maxTokens: 64,
+        reasoningEffort,
       });
       report.chat = response?.choices?.[0]?.message?.content ?? response;
     } catch (error) {
@@ -497,6 +503,7 @@ function claudeEnv(config, baseUrl) {
     'CLAUDE_CODE_USE_VERTEX',
     'CLAUDE_CODE_USE_FOUNDRY',
     'CLAUDE_CODE_USE_ANTHROPIC_AWS',
+    'CLAUDE_CODE_USE_MANTLE',
     'ANTHROPIC_BEDROCK_BASE_URL',
     'ANTHROPIC_VERTEX_BASE_URL',
     'ANTHROPIC_FOUNDRY_BASE_URL',

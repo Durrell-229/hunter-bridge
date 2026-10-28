@@ -303,17 +303,18 @@ export async function listGroqModels(config, { signal, timeoutMs = 20000 } = {})
 }
 
 /** Petit appel de test utilisé par `groqcc doctor --chat`. */
-export async function simpleChat(config, { model, prompt, maxTokens = 16, timeoutMs = 30000 } = {}) {
-  const { res, cleanup } = await requestGroq(
-    config,
-    {
-      model,
-      messages: [{ role: 'user', content: prompt || 'Réponds uniquement : OK' }],
-      max_completion_tokens: maxTokens,
-      temperature: 0,
-    },
-    { timeoutMs, stream: false },
-  );
+export async function simpleChat(
+  config,
+  { model, prompt, maxTokens = 16, timeoutMs = 30000, reasoningEffort } = {},
+) {
+  const body = {
+    model,
+    messages: [{ role: 'user', content: prompt || 'Réponds uniquement : OK' }],
+    max_completion_tokens: maxTokens,
+    temperature: 0,
+  };
+  if (reasoningEffort) body.reasoning_effort = reasoningEffort;
+  const { res, cleanup } = await requestGroq(config, body, { timeoutMs, stream: false });
 
   try {
     return await res.json();

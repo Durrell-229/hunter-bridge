@@ -518,6 +518,13 @@ test('clé Groq absente : erreur 500 configuration_error', async (t) => {
   assert.match(json.error.message, /GROQ_API_KEY/);
 });
 
+test('HEAD /api/hello répond à la sonde de Claude Code', async (t) => {
+  const harness = await createHarness(t);
+  const res = await fetch(`${harness.base}/api/hello`, { method: 'HEAD' });
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), '');
+});
+
 test('health, models et count_tokens', async (t) => {
   const harness = await createHarness(t);
 
