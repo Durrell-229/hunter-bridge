@@ -1,0 +1,35 @@
+{
+  "name": "groq-claude-bridge",
+  "version": "0.1.0",
+  "description": "Proxy local Anthropic Messages API -> Groq (OpenAI-compatible) pour Claude Code",
+  "type": "module",
+  "bin": {
+    "groqcc": "./bin/groqcc.js"
+  },
+  "scripts": {
+    "start": "node bin/groqcc.js start",
+    "claude": "node bin/groqcc.js claude",
+    "doctor": "node bin/groqcc.js doctor",
+    "models": "node bin/groqcc.js models",
+    "env": "node bin/groqcc.js env",
+    "test": "node --test test/"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "claude-code",
+    "groq",
+    "anthropic",
+    "proxy",
+    "llm"
+  ],
+  "license": "MIT",
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    ".env.example",
+    "LICENSE"
+  ]
+}
