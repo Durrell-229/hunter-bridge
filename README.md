@@ -252,6 +252,28 @@ Puis mets un ID présent dans la liste dans `GROQ_MODEL` / `GROQ_SMALL_MODEL`.
 - Le proxy respecte `retry-after` et retente une fois.
 - Réduis la taille du contexte, ou passe à un plan supérieur.
 
+### `413` / `Request too large ... TPM`
+
+Avec le plan gratuit Groq, `openai/gpt-oss-120b` est limité à **8 000 tokens par minute**. Claude Code complet envoie environ **23 000 tokens** avant même le premier message (prompt système + outils), donc Groq refuse la requête :
+
+```text
+413: Request too large ... Limit 8000, Requested 23583
+```
+
+Deux options :
+
+1. Passer au **Groq Dev Tier** (recommandé pour coder avec Claude Code) :
+   <https://console.groq.com/settings/billing>
+2. Tester un mode Claude Code réduit, pour une réponse simple :
+
+```bash
+npm run claude -- \
+  --tools 'Read,Edit,Write,Bash' \
+  --system-prompt 'Tu es un assistant de codage concis. Utilise les outils quand cela est nécessaire.'
+```
+
+Ce mode supprime la plupart des outils et le prompt système complet de Claude Code. Il peut passer sous 8 000 tokens pour une requête, mais les boucles d'outils dépassent vite cette limite. Pour un usage réel de Claude Code, le Dev Tier reste nécessaire.
+
 ### `400` / outil ou schéma refusé
 
 - Essaie `GROQ_MODEL=openai/gpt-oss-120b`.
