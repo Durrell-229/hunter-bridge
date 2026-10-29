@@ -82,6 +82,26 @@ Les arguments après `--` sont transmis à Claude Code :
 npm run claude -- --profile bugbounty -- --resume
 ```
 
+### Depuis un autre projet
+
+`npm run claude` s’exécute dans le dossier de Hunter Bridge : Claude Code voit donc les fichiers du pont. Pour travailler dans le dossier courant, lance l’alias `hunter` depuis ton projet :
+
+```bash
+cd ~/projets/mon-ctf
+hunter --profile ctf
+```
+
+`hunter` sans sous-commande lance Claude Code ; `hunter start`, `hunter doctor`, etc. restent disponibles. Le proxy utilise toujours `hunter.config.json` et `.env` du pont, mais le répertoire de travail de Claude Code reste celui depuis lequel tu as lancé la commande.
+
+Sans alias, la commande équivalente est :
+
+```bash
+HUNTER_ENV_FILE=~/Bureau/hunter-bridge/.env \
+  node ~/Bureau/hunter-bridge/bin/hunter.js claude \
+  --config ~/Bureau/hunter-bridge/hunter.config.json \
+  --profile ctf
+```
+
 ### Proxy seul
 
 ```bash
@@ -108,7 +128,7 @@ claude
 | `npm run env` | variables d’environnement Claude Code |
 | `npm test` | suite de tests |
 
-Options utiles : `--profile`, `--model` (cible explicite), `--provider`, `--config`, `--env-file`, `--port`, `--host`, `--no-mcp`, `--no-plugins`, `--json`.
+Options utiles : `--profile`, `--model` (cible explicite), `--provider`, `--config`, `--dotenv` (ou `HUNTER_ENV_FILE`), `--port`, `--host`, `--no-mcp`, `--no-plugins`, `--json`.
 
 ---
 

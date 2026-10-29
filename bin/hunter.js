@@ -40,7 +40,7 @@ Usage :
   hunter help
 
 Options :
-  --env-file <path>       fichier .env (défaut : ./.env puis <projet>/.env)
+  --dotenv <path>         fichier .env (ou HUNTER_ENV_FILE ; défaut : ./.env puis <projet>/.env)
   --config <path>         configuration Hunter (défaut : ./hunter.config.json)
   --port <n>              port d'écoute (défaut : 8787 ; 0 = aléatoire pour claude)
   --host <host>           adresse d'écoute (défaut : 127.0.0.1)
@@ -92,11 +92,15 @@ async function main() {
     return;
   }
 
-  let envFile = opts.envFile
-    ? path.resolve(opts.envFile)
+  // HUNTER_ENV_FILE évite le conflit avec l'option native `node --env-file`,
+  // que Node intercepte même après le nom du script.
+  const envFileOption = opts.envFile || process.env.HUNTER_ENV_FILE;
+  let envFile = envFileOption
+    ? path.resolve(envFileOption)
     : findEnvFile(process.cwd(), PROJECT_ROOT) || path.join(PROJECT_ROOT, '.env');
-  if (opts.envFile && !fs.existsSync(envFile)) {
-    console.error(`Erreur : fichier .env introuvable : ${opts.envFile}`);
+  // `init` peut créer le fichier .env : ne pas le refuser s'il est absent.
+  if (envFileOption && !fs.existsSync(envFile) && command !== 'init') {
+    console.error(`Erreur : fichier .env introuvable : ${envFileOption}`);
     process.exitCode = 1;
     return;
   }
@@ -227,6 +231,9 @@ function parseArgs(argv, command = 'start') {
       case '--version':
         opts.version = true;
         break;
+      case '--dotenv':
+      // Conservé pour compatibilité, mais Node intercepte `--env-file`
+      // depuis Node 20.6 : préférer --dotenv ou HUNTER_ENV_FILE.
       case '--env-file':
         opts.envFile = takeValue();
         break;
