@@ -108,7 +108,7 @@ claude
 | `npm run env` | variables d’environnement Claude Code |
 | `npm test` | suite de tests |
 
-Options utiles : `--profile`, `--provider`, `--config`, `--env-file`, `--port`, `--host`, `--no-mcp`, `--no-plugins`, `--json`.
+Options utiles : `--profile`, `--model` (cible explicite), `--provider`, `--config`, `--env-file`, `--port`, `--host`, `--no-mcp`, `--no-plugins`, `--json`.
 
 ---
 
@@ -120,7 +120,7 @@ Onglets :
 
 - **Vue d’ensemble** : requêtes, erreurs, tokens, fallbacks, état des fournisseurs, dernière décision du routeur.
 - **Fournisseurs** : activer/désactiver, tester, découvrir les modèles, saisir une clé.
-- **Routage** : profil actif, chaînes de modèles, mots-clés du classifieur, consignes du harnais.
+- **Routage** : profil actif, **mapping Sonnet/Opus/Haiku**, chaînes de modèles, mots-clés du classifieur, consignes du harnais.
 - **MCP** : ajouter/modifier/supprimer des serveurs stdio, HTTP ou SSE, exporter `mcp.json`.
 - **Plugins** : ajouter/retirer des dossiers `--plugin-dir`.
 - **Journal** : requêtes récentes, modèle réellement utilisé, latence, tokens, erreurs.
@@ -160,13 +160,35 @@ Exemples :
 ```text
 groq/openai/gpt-oss-120b
 opencode/claude-sonnet-4-5
-nvidia/deepseek-ai/deepseek-r1
+nvidia/nvidia/nemotron-3-ultra-550b-a55b
 gemini/gemini-2.5-pro
 ```
 
-Un ID Groq brut (`openai/gpt-oss-120b`) reste accepté pour la compatibilité. `sonnet`, `opus` et `haiku` sont des alias Claude Code routés par le profil actif.
+Certains IDs de modèles contiennent eux-mêmes un slash (NVIDIA notamment). La cible complète est alors `fournisseur/id-du-modèle`, par exemple `nvidia/nvidia/nemotron-3-ultra-550b-a55b`. La forme courte `nvidia/nemotron-3-ultra-550b-a55b` est aussi reconnue si le modèle existe dans le catalogue.
 
-Les catalogues locaux sont fournis à titre indicatif. Utilise **Découvrir les modèles** dans le dashboard ou `npm run models` pour interroger chaque fournisseur et ajouter les IDs disponibles.
+Un ID Groq brut (`openai/gpt-oss-120b`) reste accepté pour la compatibilité.
+
+### Choisir le modèle dans Claude Code
+
+Claude Code ne connaît que ses propres alias (`sonnet`, `opus`, `haiku`). Hunter Bridge les traduit vers trois **slots** configurables :
+
+1. ouvre le dashboard, onglet **Routage** ;
+2. dans **Modèles Claude Code**, choisis une cible pour Sonnet, Opus et Haiku ;
+3. clique **Appliquer** — le proxy prend le nouveau mapping en compte dès la requête suivante, sans redémarrer Claude Code.
+
+Ensuite, `/model` dans Claude Code fonctionne réellement :
+
+- `Sonnet` → la cible choisie pour le slot `sonnet` ;
+- `Opus` → la cible choisie pour le slot `opus` ;
+- `Haiku` → la cible choisie pour le slot `haiku`.
+
+Pour forcer un modèle précis sans passer par `/model` :
+
+```bash
+npm run claude -- --model nvidia/nvidia/nemotron-3-ultra-550b-a55b
+```
+
+Le dashboard affiche le modèle réellement utilisé dans le journal (`fournisseur/modèle`). Les catalogues locaux sont fournis à titre indicatif : utilise **Découvrir les modèles** ou `npm run models` pour vérifier les IDs accessibles avec ta clé.
 
 ---
 
@@ -304,7 +326,7 @@ Si Claude Code n’est pas dans le `PATH`, Hunter Bridge cherche aussi :
 
 ### `413 Request too large` / limite TPM Groq
 
-Le plan gratuit Groq est limité à **8 000 TPM**. Une requête Claude Code complète peut dépasser cette limite (souvent 20k–25k tokens). Solutions :
+Le plan gratuit Groq est limité à **8 000 TPM**. Une requête Claude Code complète peut dépasser cette limite (souvent 20k–25k tokens). Hunter Bridge écarte automatiquement Groq quand l’entrée estimée dépasse `maxInputTokens` (6 000 par défaut) et passe à la cible suivante. Solutions :
 
 1. passer au **Dev Tier** Groq ;
 2. utiliser un autre fournisseur (OpenCode Zen, Gemini, NVIDIA) ;

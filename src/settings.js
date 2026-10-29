@@ -34,6 +34,9 @@ export const DEFAULT_SETTINGS = Object.freeze({
       maxTokensField: 'max_completion_tokens',
       streamUsage: true,
       reasoning: true,
+      // Le palier gratuit Groq est limité à 8 000 TPM. On évite d'envoyer
+      // une requête vouée au 429 quand le contexte Claude Code est gros.
+      maxInputTokens: 6000,
       models: groqModels,
     },
     opencode: {
@@ -143,6 +146,29 @@ export const DEFAULT_SETTINGS = Object.freeze({
       streamUsage: false,
       reasoning: false,
       models: {
+        'nvidia/nemotron-3-ultra-550b-a55b': {
+          label: 'Nemotron 3 Ultra 550B',
+          context: 131072,
+          maxOutput: 32768,
+          tools: true,
+          reasoning: ['low', 'medium', 'high'],
+          tags: ['reasoning', 'ctf', 'tools'],
+        },
+        'nvidia/nemotron-3.5-lightning-30b-a3b': {
+          label: 'Nemotron 3.5 Lightning 30B',
+          context: 131072,
+          maxOutput: 32768,
+          tools: true,
+          tags: ['fast', 'reasoning', 'tools'],
+        },
+        'openai/gpt-oss-20b': {
+          label: 'GPT-OSS 20B (NVIDIA)',
+          context: 131072,
+          maxOutput: 32768,
+          tools: true,
+          reasoning: ['low', 'medium', 'high'],
+          tags: ['fast', 'tools'],
+        },
         'deepseek-ai/deepseek-r1': {
           label: 'DeepSeek R1',
           context: 131072,
@@ -226,6 +252,14 @@ export const DEFAULT_SETTINGS = Object.freeze({
   },
   routing: {
     activeProfile: 'auto',
+    // Chaque alias natif de Claude Code est traduit vers une cible
+    // fournisseur/modèle. Le dashboard permet de changer ces trois slots
+    // sans toucher à Claude Code.
+    claudeModels: {
+      sonnet: 'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
+      opus: 'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
+      haiku: 'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
+    },
     aliases: {
       default: 'auto',
       best: 'auto',
@@ -248,10 +282,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
         description: 'Classification locale de la tâche puis meilleure chaîne disponible.',
         keywords: [],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
           'groq/openai/gpt-oss-120b',
-          'nvidia/qwen/qwen3-coder-480b-a35b-instruct',
         ],
         suffix:
           'Tu es Hunter Bridge. Analyse la demande, choisis les outils adaptés, vérifie les hypothèses et reste concis. Pour toute cible offensive, rappelle le scope et privilégie une validation autorisée.',
@@ -260,7 +294,12 @@ export const DEFAULT_SETTINGS = Object.freeze({
         label: 'Général',
         description: 'Assistant technique polyvalent.',
         keywords: [],
-        chain: ['groq/openai/gpt-oss-120b', 'gemini/gemini-2.5-flash', 'opencode/gpt-5.4'],
+        chain: [
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
+          'gemini/gemini-2.5-flash',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
+          'groq/openai/gpt-oss-20b',
+        ],
         suffix: 'Réponds de façon concise, précise et vérifiable.',
       },
       fast: {
@@ -268,9 +307,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
         description: 'Réponses courtes, faible latence, faible coût.',
         keywords: [],
         chain: [
-          'groq/openai/gpt-oss-20b',
-          'opencode/deepseek-v4.1-flash-free',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
+          'nvidia/openai/gpt-oss-20b',
           'gemini/gemini-2.5-flash',
+          'groq/openai/gpt-oss-20b',
         ],
         suffix: 'Va droit au but. Pas de plan inutile.',
       },
@@ -293,10 +333,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'git',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
           'groq/openai/gpt-oss-120b',
-          'nvidia/qwen/qwen3-coder-480b-a35b-instruct',
         ],
         suffix:
           'Travaille comme un ingénieur senior : lis le code avant de modifier, minimise le diff, lance les tests et explique les risques.',
@@ -328,10 +368,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'cve-',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
           'groq/openai/gpt-oss-120b',
-          'nvidia/qwen/qwen3-coder-480b-a35b-instruct',
         ],
         suffix:
           'Méthode bug bounty : vérifie le scope et les règles avant toute action, privilégie le recon passif, formule des hypothèses testables, collecte des preuves minimales, évite les actions destructrices et ne teste que les cibles autorisées.',
@@ -370,10 +410,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'smart contract',
         ],
         chain: [
-          'opencode/claude-opus-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
           'groq/openai/gpt-oss-120b',
-          'nvidia/deepseek-ai/deepseek-v3.1',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
         ],
         suffix:
           'Méthode CTF : identifie la catégorie, énumère les indices, propose plusieurs hypothèses, garde une trace des commandes et vérifie le flag. Pour les challenges difficiles, décompose en sous-problèmes et utilise les outils de façon itérative.',
@@ -397,9 +437,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'gobuster',
         ],
         chain: [
-          'groq/openai/gpt-oss-20b',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
+          'nvidia/openai/gpt-oss-20b',
           'gemini/gemini-2.5-flash',
-          'opencode/claude-haiku-4-5',
+          'groq/openai/gpt-oss-20b',
         ],
         suffix:
           'Méthode recon : reste passif d’abord, note les sources, déduplique les résultats et respecte le scope.',
@@ -427,7 +468,7 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'request smuggling',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
           'groq/openai/gpt-oss-120b',
         ],
@@ -452,10 +493,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'pwntools',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
           'groq/openai/gpt-oss-120b',
-          'nvidia/deepseek-ai/deepseek-v3.1',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
         ],
         suffix:
           'Méthode pwn : protège les artefacts, identifie les mitigations, écris un script pwntools reproductible et explique chaque primitive.',
@@ -479,10 +520,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'anti-debug',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
           'groq/openai/gpt-oss-120b',
-          'nvidia/deepseek-ai/deepseek-r1',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
         ],
         suffix:
           'Méthode reverse : commence par les métadonnées, les chaînes et les points d’entrée, puis reconstruis la logique par blocs et valide chaque hypothèse.',
@@ -507,10 +548,10 @@ export const DEFAULT_SETTINGS = Object.freeze({
           'nonce reuse',
         ],
         chain: [
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
           'gemini/gemini-2.5-pro',
           'groq/openai/gpt-oss-120b',
-          'nvidia/deepseek-ai/deepseek-r1',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
         ],
         suffix:
           'Méthode crypto : formalise les inconnues, vérifie les paramètres, construis un script de résolution et valide le résultat sur les données fournies.',
@@ -535,7 +576,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
         ],
         chain: [
           'gemini/gemini-2.5-pro',
-          'opencode/claude-sonnet-4-5',
+          'nvidia/nvidia/nemotron-3-ultra-550b-a55b',
+          'nvidia/nvidia/nemotron-3.5-lightning-30b-a3b',
           'groq/openai/gpt-oss-120b',
         ],
         suffix:
@@ -596,6 +638,19 @@ export function normalizeSettings(settings) {
   next.providers = next.providers && typeof next.providers === 'object' ? next.providers : {};
   next.routing = next.routing && typeof next.routing === 'object' ? next.routing : {};
   next.routing.activeProfile = String(next.routing.activeProfile || 'auto');
+  const defaultClaudeModels = defaultSettings().routing.claudeModels;
+  next.routing.claudeModels =
+    next.routing.claudeModels && typeof next.routing.claudeModels === 'object'
+      ? next.routing.claudeModels
+      : { ...defaultClaudeModels };
+  for (const slot of ['sonnet', 'opus', 'haiku']) {
+    const value = next.routing.claudeModels[slot];
+    if (value === undefined || value === null) {
+      next.routing.claudeModels[slot] = defaultClaudeModels[slot];
+    } else {
+      next.routing.claudeModels[slot] = String(value).trim();
+    }
+  }
   next.routing.aliases =
     next.routing.aliases && typeof next.routing.aliases === 'object' ? next.routing.aliases : {};
   next.routing.classifier =
@@ -626,6 +681,10 @@ export function normalizeSettings(settings) {
     provider.enabled = provider.enabled !== false;
     provider.baseUrl = String(provider.baseUrl || '').replace(/\/+$/, '');
     provider.apiKeyEnv = String(provider.apiKeyEnv || '').trim();
+    if (provider.maxInputTokens !== undefined) {
+      const limit = Number(provider.maxInputTokens);
+      provider.maxInputTokens = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : 0;
+    }
     provider.models =
       provider.models && typeof provider.models === 'object' ? provider.models : {};
   }

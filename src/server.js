@@ -143,6 +143,19 @@ async function handleRequest(req, res, config, log, startedAt, runtime) {
 
   if (handleDashboardAsset(req, res, path)) return;
 
+  // Certains terminaux/éditeurs concatènent le lien du dashboard avec une URL
+  // absolue : /dashboardhttp://127.0.0.1:8787/dashboard. On redirige vers la
+  // vraie page au lieu de renvoyer une 404 déroutante.
+  if (/^\/dashboardhttps?:\/\//.test(path) && (req.method === 'GET' || req.method === 'HEAD')) {
+    res.writeHead(302, {
+      location: '/dashboard',
+      'cache-control': 'no-store',
+      'content-length': '0',
+    });
+    res.end();
+    return;
+  }
+
   if (path === '/health' && req.method === 'GET') {
     const pub = publicConfig(config);
     const configured = [...runtime.providers.values()].filter((provider) => provider.apiKey);
@@ -260,6 +273,7 @@ async function handleMessages(req, res, config, requestId, log, runtime) {
   let selected = null;
   let meta = null;
   let firstError = null;
+  const failures = [];
   for (const candidate of decision.candidates) {
     if (clientClosed) break;
     selected = candidate;
@@ -286,6 +300,7 @@ async function handleMessages(req, res, config, requestId, log, runtime) {
       });
     } catch (error) {
       if (!firstError) firstError = error;
+      failures.push(`${candidate.target}: ${redactSecrets(error?.message || String(error)).slice(0, 220)}`);
       noteFailure(runtime, candidate, error);
       continue;
     }
@@ -303,6 +318,7 @@ async function handleMessages(req, res, config, requestId, log, runtime) {
     } catch (error) {
       if (clientClosed) break;
       if (!firstError) firstError = error;
+      failures.push(`${candidate.target}: ${redactSecrets(error?.message || String(error)).slice(0, 220)}`);
       noteFailure(runtime, candidate, error);
       log.warn(
         `Fallback ${candidate.target} → ${redactSecrets(error?.message || String(error))}`,
@@ -311,12 +327,23 @@ async function handleMessages(req, res, config, requestId, log, runtime) {
   }
 
   if (!fetched) {
-    const error =
+    const baseError =
       firstError ||
       new BridgeError('Aucun fournisseur disponible', {
         status: 500,
         type: 'configuration_error',
       });
+    const error =
+      failures.length > 1
+        ? new BridgeError(
+            `Tous les modèles de la chaîne ont échoué. ${failures.slice(0, 5).join(' | ')}`,
+            {
+              status: Number(baseError.status) === 429 ? 429 : 502,
+              type: Number(baseError.status) === 429 ? 'rate_limit_error' : 'api_error',
+              retryAfter: baseError.retryAfter,
+            },
+          )
+        : baseError;
     finishRequest(runtime, record, {
       ok: false,
       providerId: selected?.providerId,

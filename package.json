@@ -1,6 +1,6 @@
 {
   "name": "hunter-bridge",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Hunter Bridge — proxy Anthropic Messages multi-fournisseurs, dashboard, routage CTF/bug bounty, MCP et plugins pour Claude Code",
   "type": "module",
   "bin": {

@@ -14,6 +14,7 @@ export const DEFAULTS = Object.freeze({
   logLevel: 'info',
   streaming: true,
   claudeModel: 'claude-sonnet-4-5',
+  claudeOpusModel: 'claude-opus-4-5',
   claudeSmallModel: 'claude-3-5-haiku-latest',
   adminToken: '',
 });
@@ -91,6 +92,12 @@ export function buildConfig(env = process.env, overrides = {}) {
     claudeModel: String(
       overrides.claudeModel ?? env.CLAUDE_MODEL ?? env.ANTHROPIC_MODEL ?? DEFAULTS.claudeModel,
     ).trim() || DEFAULTS.claudeModel,
+    claudeOpusModel: String(
+      overrides.claudeOpusModel ??
+        env.CLAUDE_OPUS_MODEL ??
+        env.ANTHROPIC_DEFAULT_OPUS_MODEL ??
+        DEFAULTS.claudeOpusModel,
+    ).trim() || DEFAULTS.claudeOpusModel,
     claudeSmallModel: String(
       overrides.claudeSmallModel ??
         env.CLAUDE_SMALL_MODEL ??

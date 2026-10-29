@@ -49,6 +49,15 @@ test('dashboard : page statique et état admin sans fuite de clé', async (t) =>
   assert.equal(JSON.stringify(json).includes('test-key'), false);
 });
 
+test('dashboard : une URL de dashboard concaténée est redirigée', async (t) => {
+  const { base } = await harness(t);
+  const malformed = await fetch(`${base}/dashboard${base}/dashboard`, { redirect: 'manual' });
+  assert.equal(malformed.status, 302);
+  assert.equal(malformed.headers.get('location'), '/dashboard');
+  const page = await fetch(`${base}/dashboard`);
+  assert.equal(page.status, 200);
+});
+
 test('dashboard : HUNTER_ADMIN_TOKEN protège les routes admin', async (t) => {
   const { base } = await harness(t, { adminToken: 'secret-admin' });
   const denied = await fetch(`${base}/api/admin/state`);
@@ -60,7 +69,7 @@ test('dashboard : HUNTER_ADMIN_TOKEN protège les routes admin', async (t) => {
   assert.equal(allowed.status, 200);
 });
 
-test('dashboard : changement de profil et CRUD MCP', async (t) => {
+test('dashboard : changement de profil, mapping Claude et CRUD MCP', async (t) => {
   const { base } = await harness(t);
   const routing = await fetch(`${base}/api/admin/routing`, {
     method: 'PATCH',
@@ -69,6 +78,18 @@ test('dashboard : changement de profil et CRUD MCP', async (t) => {
   });
   assert.equal(routing.status, 200);
   assert.equal((await routing.json()).activeProfile, 'ctf');
+
+  const mapping = await fetch(`${base}/api/admin/routing`, {
+    method: 'PATCH',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      claudeModels: { sonnet: 'groq/openai/gpt-oss-120b', haiku: '' },
+    }),
+  });
+  assert.equal(mapping.status, 200);
+  const mapped = await mapping.json();
+  assert.equal(mapped.routing.claudeModels.sonnet, 'groq/openai/gpt-oss-120b');
+  assert.equal(mapped.routing.claudeModels.haiku, '');
 
   const put = await fetch(`${base}/api/admin/mcp/demo`, {
     method: 'PUT',

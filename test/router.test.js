@@ -44,11 +44,22 @@ test('classifyProfile reconnaît CTF, bug bounty et reverse', () => {
   );
 });
 
-test('parseRequestedModel ne confond pas Claude Code avec OpenCode', () => {
+test('parseRequestedModel mappe les alias Claude Code vers les slots du dashboard', () => {
   const runtime = makeRuntime({ keys: { GROQ_API_KEY: 'gsk_test', OPENCODE_API_KEY: 'zen' } });
-  const parsed = parseRequestedModel('claude-sonnet-4-5', runtime.providers, runtime.settings);
-  assert.equal(parsed.kind, 'alias');
-  assert.equal(parsed.profileId, 'auto');
+  const sonnet = parseRequestedModel('claude-sonnet-4-5', runtime.providers, runtime.settings);
+  assert.equal(sonnet.kind, 'target');
+  assert.equal(sonnet.providerId, 'nvidia');
+  assert.equal(sonnet.modelId, 'nvidia/nemotron-3-ultra-550b-a55b');
+  assert.equal(sonnet.slot, 'sonnet');
+
+  const opus = parseRequestedModel('claude-opus-4-5', runtime.providers, runtime.settings);
+  assert.equal(opus.kind, 'target');
+  assert.equal(opus.modelId, 'nvidia/nemotron-3-ultra-550b-a55b');
+
+  const haiku = parseRequestedModel('claude-3-5-haiku-latest', runtime.providers, runtime.settings);
+  assert.equal(haiku.kind, 'target');
+  assert.equal(haiku.providerId, 'nvidia');
+  assert.equal(haiku.modelId, 'nvidia/nemotron-3.5-lightning-30b-a3b');
 });
 
 test('decideRoute choisit la chaîne du profil et filtre les clés absentes', () => {
@@ -62,7 +73,27 @@ test('decideRoute choisit la chaîne du profil et filtre les clés absentes', ()
   assert.ok(decision.candidates.length > 0);
   assert.equal(decision.candidates[0].providerId, 'groq');
   assert.match(decision.systemSuffix, /CTF/);
-  assert.ok(decision.skipped.some((entry) => entry.includes('opencode')));
+  assert.ok(decision.skipped.some((entry) => entry.includes('nvidia')));
+});
+
+test('les slots Claude Code sont configurables vers n’importe quelle cible', () => {
+  const runtime = makeRuntime({ keys: { GROQ_API_KEY: 'gsk_test' } });
+  runtime.settings.routing.claudeModels.sonnet = 'groq/openai/gpt-oss-120b';
+  const parsed = parseRequestedModel('claude-sonnet-4-5', runtime.providers, runtime.settings);
+  assert.equal(parsed.kind, 'target');
+  assert.equal(parsed.providerId, 'groq');
+  assert.equal(parsed.modelId, 'openai/gpt-oss-120b');
+});
+
+test('le quota d’entrée Groq évite les requêtes vouées au 429', () => {
+  const runtime = makeRuntime({ keys: { GROQ_API_KEY: 'gsk_test' } });
+  runtime.settings.routing.claudeModels.sonnet = 'groq/openai/gpt-oss-120b';
+  const decision = decide(runtime, {
+    model: 'claude-sonnet-4-5',
+    messages: [{ role: 'user', content: 'x'.repeat(40000) }],
+  });
+  assert.equal(decision.candidates.length, 0);
+  assert.ok(decision.skipped.some((entry) => entry.includes("quota d'entrée")));
 });
 
 test('decideRoute respecte une cible fournisseur explicite', () => {

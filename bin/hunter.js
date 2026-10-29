@@ -300,6 +300,12 @@ function parseArgs(argv, command = 'start') {
 function looksLikeClaudeModel(value) {
   const model = String(value || '').toLowerCase();
   if (!model) return false;
+  const provider = model.includes('/') ? model.slice(0, model.indexOf('/')) : '';
+  if (['groq', 'opencode', 'opencodezen', 'opencode-zen', 'zen', 'nvidia', 'nim', 'gemini', 'google', 'hunter', 'profile', 'route'].includes(provider)) {
+    // `--model opencode/claude-opus-4-5` est une cible Hunter, pas un
+    // alias natif à transmettre à Claude Code.
+    return false;
+  }
   if (['default', 'best', 'fable', 'sonnet', 'opus', 'haiku', 'opusplan'].includes(model)) {
     return true;
   }
@@ -718,7 +724,7 @@ function claudeEnvVars(config, baseUrl, runtime, { maskSecret = false } = {}) {
     ANTHROPIC_MODEL: config.claudeModel,
     ANTHROPIC_SMALL_FAST_MODEL: config.claudeSmallModel,
     ANTHROPIC_DEFAULT_SONNET_MODEL: config.claudeModel,
-    ANTHROPIC_DEFAULT_OPUS_MODEL: config.claudeModel,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: config.claudeOpusModel,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: config.claudeSmallModel,
     CLAUDE_CODE_MAX_OUTPUT_TOKENS: String(maxOutput),
     CLAUDE_CODE_MAX_CONTEXT_TOKENS: String(contextWindow),

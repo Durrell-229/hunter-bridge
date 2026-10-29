@@ -49,6 +49,56 @@ export function modelTarget(providerId, modelId) {
   return `${providerId}/${modelId}`;
 }
 
+/**
+ * Retrouve le slot Claude Code (sonnet/opus/haiku) à partir de l'alias ou
+ * de l'identifiant natif envoyé par Claude Code.
+ */
+export function claudeSlotFor(raw) {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value) return '';
+  if (value === 'haiku' || /(^|[-_/])haiku([-_.]|$)/.test(value)) return 'haiku';
+  if (value === 'opus' || /(^|[-_/])opus([-_.]|$)/.test(value)) return 'opus';
+  if (value === 'sonnet' || /(^|[-_/])sonnet([-_.]|$)/.test(value)) return 'sonnet';
+  if (value === 'claude' || /^claude([-_.]|$)/.test(value)) return 'sonnet';
+  return '';
+}
+
+function canonicalModelId(provider, modelId) {
+  const value = String(modelId || '');
+  if (!provider || !value) return value;
+  if (provider.models?.has?.(value)) return value;
+  const qualified = `${provider.id}/${value}`;
+  if (provider.models?.has?.(qualified)) return qualified;
+  if (provider.models && !(provider.models instanceof Map) && provider.models[qualified]) {
+    return qualified;
+  }
+  return value;
+}
+
+function parsedClaudeModel(value, slot, providers, settings) {
+  const mapped = String(settings?.routing?.claudeModels?.[slot] || '').trim();
+  if (!mapped) return null;
+  if (mapped === 'auto' || PROFILE_PREFIXES.has(mapped.toLowerCase().split('/')[0])) {
+    const profileId = mapped.includes('/')
+      ? mapped.slice(mapped.indexOf('/') + 1)
+      : mapped;
+    return { kind: 'profile', profileId, raw: value, slot };
+  }
+  const target = splitTarget(mapped);
+  const provider = target.providerId ? providerById(providers, target.providerId) : null;
+  if (provider && target.modelId) {
+    return {
+      kind: 'target',
+      providerId: target.providerId,
+      modelId: canonicalModelId(provider, target.modelId),
+      raw: value,
+      slot,
+      mappedFrom: mapped,
+    };
+  }
+  return null;
+}
+
 export function extractRequestText(body, limit = 24000) {
   const parts = [];
   parts.push(systemText(body?.system));
@@ -134,14 +184,23 @@ export function parseRequestedModel(raw, providers, settings) {
   if (!value) return { kind: 'none', raw: value };
   const lower = value.toLowerCase();
 
+  // Les alias natifs de Claude Code (`claude-sonnet-4-5`, `sonnet`, etc.)
+  // sont mappés vers les trois slots configurés dans le dashboard. Cela
+  // permet à `/model` de choisir réellement le fournisseur sous-jacent.
+  const claudeSlot = claudeSlotFor(lower);
+  if (claudeSlot) {
+    const mapped = parsedClaudeModel(value, claudeSlot, providers, settings);
+    if (mapped) return mapped;
+    const aliases = settings?.routing?.aliases || {};
+    const profileId =
+      aliases[lower] ||
+      aliases[claudeSlot] ||
+      (claudeSlot === 'haiku' ? 'fast' : settings?.routing?.activeProfile || 'auto');
+    return { kind: 'alias', profileId, raw: value, slot: claudeSlot };
+  }
+
   const profileAlias = (settings?.routing?.aliases || {})[lower];
   if (profileAlias) return { kind: 'alias', profileId: profileAlias, raw: value };
-
-  // Les identifiants Claude Code (`claude-sonnet-4-5`, `claude-3-5-haiku...`)
-  // ne doivent pas être confondus avec un modèle OpenCode homonyme.
-  if (/^claude($|[-_.])/.test(lower) || lower === 'sonnet' || lower === 'opus' || lower === 'haiku') {
-    return { kind: 'alias', profileId: settings?.routing?.activeProfile || 'auto', raw: value };
-  }
 
   const first = lower.split('/')[0];
   if (PROFILE_PREFIXES.has(first) && lower.includes('/')) {
@@ -149,8 +208,14 @@ export function parseRequestedModel(raw, providers, settings) {
   }
 
   const target = splitTarget(value);
-  if (target.providerId && providerById(providers, target.providerId)) {
-    return { kind: 'target', providerId: target.providerId, modelId: target.modelId, raw: value };
+  const targetProvider = target.providerId ? providerById(providers, target.providerId) : null;
+  if (targetProvider && target.modelId) {
+    return {
+      kind: 'target',
+      providerId: target.providerId,
+      modelId: canonicalModelId(targetProvider, target.modelId),
+      raw: value,
+    };
   }
 
   // ID sans préfixe fournisseur : on le cherche dans les catalogues.
@@ -228,8 +293,9 @@ export function chooseProfile(body, providers, settings, options = {}) {
 }
 
 function candidateFromTarget(provider, modelId, { explicit = false } = {}) {
-  const info = modelInfoFor(provider, modelId) || {
-    label: modelId,
+  const canonicalId = canonicalModelId(provider, modelId);
+  const info = modelInfoFor(provider, canonicalId) || {
+    label: canonicalId,
     context: 131072,
     maxOutput: 32768,
     tools: true,
@@ -239,11 +305,11 @@ function candidateFromTarget(provider, modelId, { explicit = false } = {}) {
   return {
     providerId: provider.id,
     provider,
-    modelId,
+    modelId: canonicalId,
     model: info,
-    target: modelTarget(provider.id, modelId),
+    target: modelTarget(provider.id, canonicalId),
     explicit,
-    provisional: !modelInfoFor(provider, modelId),
+    provisional: !modelInfoFor(provider, canonicalId),
   };
 }
 
@@ -253,6 +319,9 @@ function requirementsMet(candidate, { needsTools, inputTokens }) {
   if (needsTools && candidate.provider.tools === false) return 'fournisseur sans support des outils';
   if (candidate.provider.cooldownUntil && candidate.provider.cooldownUntil > Date.now()) {
     return 'fournisseur en cooldown';
+  }
+  if (candidate.provider.maxInputTokens && inputTokens > candidate.provider.maxInputTokens) {
+    return `quota d'entrée dépassé (${inputTokens} > ${candidate.provider.maxInputTokens} tokens)`;
   }
   if (needsTools && candidate.model.tools === false) return 'modèle sans support des outils';
   const context = Number(candidate.model.context || 131072);

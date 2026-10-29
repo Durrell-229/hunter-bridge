@@ -169,6 +169,7 @@ export function refreshProviders(runtime) {
       streamUsage: providerSettings.streamUsage !== false,
       reasoning: providerSettings.reasoning !== false,
       tools: providerSettings.tools !== false,
+      maxInputTokens: Number(providerSettings.maxInputTokens) || 0,
       models,
       retries: Number.isInteger(providerSettings.retries)
         ? providerSettings.retries
@@ -507,7 +508,7 @@ export function updateProvider(runtime, providerId, patch) {
 
 export function updateRouting(runtime, patch) {
   const routing = runtime.settings.routing;
-  for (const key of ['aliases', 'classifier', 'fallback', 'profiles']) {
+  for (const key of ['claudeModels', 'aliases', 'classifier', 'fallback', 'profiles']) {
     if (patch?.[key] !== undefined) {
       routing[key] = deepMerge(routing[key] || {}, patch[key]);
     }

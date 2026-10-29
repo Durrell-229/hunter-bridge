@@ -234,7 +234,34 @@ function renderProviders() {
   $('#providers-list').innerHTML = state.providers.map((provider) => providerCard(provider)).join('');
 }
 
+function claudeModelOptions(selected) {
+  const chosen = String(selected || '');
+  let html = '<option value="">Auto / profil actif</option>';
+  for (const provider of state.providers || []) {
+    const models = provider.models || [];
+    if (!models.length) continue;
+    html += `<optgroup label="${esc(provider.label)}${provider.keyConfigured ? '' : ' — clé absente'}">`;
+    for (const model of models) {
+      const value = `${provider.id}/${model.id}`;
+      html += `<option value="${esc(value)}"${value === chosen ? ' selected' : ''}>${esc(model.label || model.id)}</option>`;
+    }
+    html += '</optgroup>';
+  }
+  if (chosen && !html.includes(`value="${esc(chosen)}"`)) {
+    html += `<option value="${esc(chosen)}" selected>${esc(chosen)}</option>`;
+  }
+  return html;
+}
+
 function renderRouting() {
+  const claudeModels = state.routing.claudeModels || {};
+  const sonnet = $('#claude-sonnet');
+  const opus = $('#claude-opus');
+  const haiku = $('#claude-haiku');
+  if (sonnet) sonnet.innerHTML = claudeModelOptions(claudeModels.sonnet);
+  if (opus) opus.innerHTML = claudeModelOptions(claudeModels.opus);
+  if (haiku) haiku.innerHTML = claudeModelOptions(claudeModels.haiku);
+
   const profiles = Object.entries(state.routing.profiles || {});
   $('#profiles-list').innerHTML = profiles
     .map(([id, profile]) => {
@@ -370,6 +397,25 @@ function bindEvents() {
   $('#routing-active-save').addEventListener('click', () => {
     const value = $('#routing-active').value;
     if (value) setActiveProfile(value);
+  });
+
+  $('#claude-models-save').addEventListener('click', async () => {
+    try {
+      state = await api('/api/admin/routing', {
+        method: 'PATCH',
+        body: JSON.stringify({
+          claudeModels: {
+            sonnet: $('#claude-sonnet').value,
+            opus: $('#claude-opus').value,
+            haiku: $('#claude-haiku').value,
+          },
+        }),
+      });
+      renderTab('routing', true);
+      showToast('Modèles Claude Code enregistrés. Mapping actif immédiatement.', 'ok');
+    } catch (error) {
+      showToast(error.message, 'error');
+    }
   });
 
   document.addEventListener('change', (event) => {
