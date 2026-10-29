@@ -434,7 +434,8 @@ async function runClaude(config, runtime, opts) {
 
   console.error(`\n  ${SERVICE} → Claude Code`);
   console.error(`  proxy     ${baseUrl}`);
-  console.error(`  dashboard ${baseUrl}/dashboard`);
+  console.error('  dashboard');
+  console.error(`  ${baseUrl}/dashboard`);
   console.error(`  profil    ${runtime.settings.routing.activeProfile}`);
   console.error(`  chaîne    ${(runtime.settings.routing.profiles?.[runtime.settings.routing.activeProfile]?.chain || []).join(' → ')}`);
   if (mcp?.written) console.error(`  mcp       ${mcp.path} (${mcp.count} serveur(s))`);
@@ -496,6 +497,8 @@ async function doctor(config, runtime, opts, envFile, settingsPath) {
     providers: [],
     warnings: [],
     chat: null,
+    chatModel: null,
+    chatError: null,
   };
 
   if (!fs.existsSync(envFile)) {
@@ -548,19 +551,31 @@ async function doctor(config, runtime, opts, envFile, settingsPath) {
   }
 
   if (opts.chat) {
-    try {
-      const candidate = firstCandidate(runtime, opts);
-      if (!candidate) throw new Error('aucun fournisseur disponible pour le chat');
-      const response = await simpleChat(candidate.provider, {
-        model: candidate.modelId,
-        prompt: 'Réponds uniquement : OK',
-        maxTokens: 64,
-        reasoningEffort: candidate.model.reasoning?.includes('low') ? 'low' : undefined,
-      });
-      report.chat = response?.choices?.[0]?.message?.content ?? response;
-    } catch (error) {
-      report.chatError = redactSecrets(error.message);
+    const candidates = chatCandidates(runtime, opts);
+    if (!candidates.length) {
+      report.chatError = 'aucun fournisseur disponible pour le chat';
       exitCode = 1;
+    } else {
+      const failures = [];
+      for (const candidate of candidates) {
+        try {
+          const response = await simpleChat(candidate.provider, {
+            model: candidate.modelId,
+            prompt: 'Réponds uniquement : OK',
+            maxTokens: 64,
+            reasoningEffort: candidate.model.reasoning?.includes('low') ? 'low' : undefined,
+          });
+          report.chat = response?.choices?.[0]?.message?.content ?? response;
+          report.chatModel = candidate.target;
+          break;
+        } catch (error) {
+          failures.push(`${candidate.target}: ${redactSecrets(error.message)}`);
+        }
+      }
+      if (!report.chat) {
+        report.chatError = failures.join(' | ');
+        exitCode = 1;
+      }
     }
   }
 
@@ -590,7 +605,10 @@ async function doctor(config, runtime, opts, envFile, settingsPath) {
       `   ${provider.id.padEnd(10)} ${String(provider.models).padStart(4)} modèles  ${key.padEnd(28)} ${test}`,
     );
   }
-  if (report.chat) console.log(`\n  Test chat   ${JSON.stringify(report.chat)}`);
+  if (report.chat) {
+    console.log(`\n  Test chat   ${JSON.stringify(report.chat)}`);
+    if (report.chatModel) console.log(`  Modèle testé ${report.chatModel}`);
+  }
   if (report.chatError) console.log(`\n  Erreur chat ${report.chatError}`);
 
   if (report.warnings.length) {
@@ -601,14 +619,16 @@ async function doctor(config, runtime, opts, envFile, settingsPath) {
   process.exitCode = exitCode;
 }
 
-function firstCandidate(runtime, opts) {
+function chatCandidates(runtime, opts) {
   const body = {
     model: runtime.config.claudeModel || 'claude-sonnet-4-5',
     messages: [{ role: 'user', content: 'ping' }],
     tools: [],
   };
   const decision = decide(runtime, body, { profile: opts.profile });
-  return decision.candidates[0] || null;
+  return decision.candidates.filter(
+    (candidate) => !opts.provider || candidate.providerId === opts.provider,
+  );
 }
 
 async function models(runtime, opts) {
@@ -743,7 +763,8 @@ function printBanner(config, runtime, address) {
   const baseUrl = baseUrlFor(config, address);
   console.log(`\n  ${SERVICE} v${VERSION}`);
   console.log(`  écoute      ${baseUrl}`);
-  console.log(`  dashboard   ${baseUrl}/dashboard`);
+  console.log('  dashboard');
+  console.log(`  ${baseUrl}/dashboard`);
   console.log(`  profil      ${runtime.settings.routing.activeProfile}`);
   console.log(`  chaîne      ${(runtime.settings.routing.profiles?.[runtime.settings.routing.activeProfile]?.chain || []).join(' → ')}`);
   console.log(`  streaming   ${config.streaming ? 'activé' : 'désactivé (synthèse SSE)'}`);
