@@ -1,10 +1,9 @@
-import crypto from 'node:crypto';
 import http from 'node:http';
 import { Readable } from 'node:stream';
 import { URL } from 'node:url';
-import { anthropicErrorBody, asBridgeError, BridgeError } from './errors.js';
+import { asBridgeError, BridgeError } from './errors.js';
 import { publicConfig } from './config.js';
-import { requestGroq } from './groq.js';
+import { requestUpstream } from './upstream.js';
 import { parseSse, SseWriter } from './sse.js';
 import {
   anthropicToGroq,
@@ -13,15 +12,30 @@ import {
   streamGroqToAnthropic,
   synthesizeAnthropicStream,
 } from './translate.js';
-import { hostnameOf, newId, redactSecrets } from './util.js';
+import { newId, redactSecrets, redactUrl } from './util.js';
 import { SERVICE, VERSION } from './version.js';
-
-const SSE_HEADERS = {
-  'content-type': 'text/event-stream; charset=utf-8',
-  'cache-control': 'no-cache, no-transform',
-  connection: 'keep-alive',
-  'x-accel-buffering': 'no',
-};
+import {
+  beginRequest,
+  closeRuntime,
+  createRuntime,
+  decide,
+  finishRequest,
+  noteAttempt,
+  noteFailure,
+  routeError,
+  snapshot,
+  apiModels,
+} from './runtime.js';
+import {
+  checkProxyAuth,
+  isAllowedHost,
+  readJson,
+  sendError,
+  sendJson,
+  sendText,
+  SSE_HEADERS,
+} from './http.js';
+import { handleAdmin, handleDashboardAsset } from './dashboard.js';
 
 const LOG_LEVELS = { error: 0, warn: 1, info: 2, debug: 3 };
 
@@ -29,7 +43,7 @@ export function createLogger(level = 'info') {
   const threshold = LOG_LEVELS[level] ?? LOG_LEVELS.info;
   const write = (kind, message) => {
     if (LOG_LEVELS[kind] <= threshold) {
-      process.stderr.write(`[groqcc] ${kind.toUpperCase()} ${message}\n`);
+      process.stderr.write(`[hunter] ${kind.toUpperCase()} ${message}\n`);
     }
   };
   return {
@@ -42,10 +56,19 @@ export function createLogger(level = 'info') {
 
 export function createBridgeServer(config, options = {}) {
   const log = options.logger || createLogger(config.logLevel);
-  const startedAt = Date.now();
+  const runtime =
+    options.runtime ||
+    createRuntime(config, {
+      settings: options.settings,
+      settingsPath: options.settingsPath,
+      envPath: options.envPath,
+      env: options.env,
+      logger: log,
+    });
+  const startedAt = runtime.totals.startedAt;
 
   const server = http.createServer((req, res) => {
-    handleRequest(req, res, config, log, startedAt).catch((error) => {
+    handleRequest(req, res, config, log, startedAt, runtime).catch((error) => {
       const bridgeError = asBridgeError(error);
       if (bridgeError.clientAborted) return;
       if (res.headersSent) {
@@ -59,10 +82,11 @@ export function createBridgeServer(config, options = {}) {
         return;
       }
       sendError(res, bridgeError, res.getHeader('x-request-id'));
-      log.warn(`${req.method} ${req.url} → ${bridgeError.status}: ${bridgeError.message}`);
+      log.warn(`${req.method} ${redactUrl(req.url)} → ${bridgeError.status}: ${redactSecrets(bridgeError.message)}`);
     });
   });
 
+  server.runtime = runtime;
   server.requestTimeout = 0;
   server.headersTimeout = 60000;
   server.keepAliveTimeout = 65000;
@@ -72,18 +96,21 @@ export function createBridgeServer(config, options = {}) {
       socket.end('HTTP/1.1 400 Bad Request\r\nConnection: close\r\n\r\n');
     }
   });
+  server.on('close', () => {
+    if (!options.runtime) closeRuntime(runtime);
+  });
 
   return server;
 }
 
-async function handleRequest(req, res, config, log, startedAt) {
+async function handleRequest(req, res, config, log, startedAt, runtime) {
   const requestId = newId('req_');
   res.setHeader('x-request-id', requestId);
   res.setHeader('request-id', requestId);
   const begin = Date.now();
 
   res.once('finish', () => {
-    log.info(`${req.method} ${req.url} → ${res.statusCode} (${Date.now() - begin} ms)`);
+    log.info(`${req.method} ${redactUrl(req.url)} → ${res.statusCode} (${Date.now() - begin} ms)`);
   });
 
   let url;
@@ -103,24 +130,38 @@ async function handleRequest(req, res, config, log, startedAt) {
   const path = url.pathname.replace(/\/+$/, '') || '/';
 
   if (req.method === 'OPTIONS') {
-    res.writeHead(204, { allow: 'GET, POST, OPTIONS' });
+    res.writeHead(204, { allow: 'GET, POST, PUT, PATCH, DELETE, OPTIONS' });
     res.end();
     return;
   }
 
-  // Sonde de préchauffage de connexion envoyée par Claude Code.
   if (path === '/api/hello' && req.method === 'HEAD') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end();
     return;
   }
 
+  if (handleDashboardAsset(req, res, path)) return;
+
   if (path === '/health' && req.method === 'GET') {
+    const pub = publicConfig(config);
+    const configured = [...runtime.providers.values()].filter((provider) => provider.apiKey);
     sendJson(res, 200, {
       ok: true,
       service: SERVICE,
       version: VERSION,
-      ...publicConfig(config),
+      ...pub,
+      keyConfigured: configured.length > 0,
+      activeProfile: runtime.settings.routing.activeProfile,
+      providers: [...runtime.providers.values()].map((provider) => ({
+        id: provider.id,
+        label: provider.label,
+        enabled: provider.enabled,
+        keyConfigured: Boolean(provider.apiKey),
+        status: provider.lastStatus,
+        models: provider.models.size,
+      })),
+      dashboard: '/dashboard',
       uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     });
     return;
@@ -130,20 +171,34 @@ async function handleRequest(req, res, config, log, startedAt) {
     sendJson(res, 200, {
       service: SERVICE,
       version: VERSION,
-      description: 'Pont local Anthropic Messages API → Groq (OpenAI-compatible)',
-      endpoints: ['POST /v1/messages', 'POST /v1/messages/count_tokens', 'GET /v1/models', 'GET /health'],
+      description:
+        'Hunter Bridge — proxy local Anthropic Messages API vers Groq, OpenCode Zen, NVIDIA NIM et Gemini.',
+      dashboard: '/dashboard',
+      endpoints: [
+        'POST /v1/messages',
+        'POST /v1/messages/count_tokens',
+        'GET /v1/models',
+        'GET /health',
+        'GET /dashboard',
+        'GET /api/admin/state',
+      ],
       ...publicConfig(config),
     });
     return;
   }
 
+  if (path === '/api/admin' || path === '/api/events' || path.startsWith('/api/admin/')) {
+    const handled = await handleAdmin(req, res, url, path, runtime, config);
+    if (handled) return;
+  }
+
   if (path === '/v1/messages' && req.method === 'POST') {
-    await handleMessages(req, res, config, requestId, log);
+    await handleMessages(req, res, config, requestId, log, runtime);
     return;
   }
 
   if (path === '/v1/messages/count_tokens' && req.method === 'POST') {
-    checkAuth(req, config);
+    checkProxyAuth(req, config);
     const body = await readJson(req, config.bodyLimitBytes);
     const inputTokens = estimateRequestTokens(body);
     sendJson(res, 200, { input_tokens: inputTokens });
@@ -151,8 +206,8 @@ async function handleRequest(req, res, config, log, startedAt) {
   }
 
   if (path === '/v1/models' && req.method === 'GET') {
-    checkAuth(req, config);
-    const models = listConfiguredModels(config);
+    checkProxyAuth(req, config);
+    const models = apiModels(runtime);
     sendJson(res, 200, {
       data: models,
       has_more: false,
@@ -163,9 +218,9 @@ async function handleRequest(req, res, config, log, startedAt) {
   }
 
   if (path.startsWith('/v1/models/') && req.method === 'GET') {
-    checkAuth(req, config);
+    checkProxyAuth(req, config);
     const id = decodeURIComponent(path.slice('/v1/models/'.length));
-    const model = listConfiguredModels(config).find((entry) => entry.id === id);
+    const model = apiModels(runtime).find((entry) => entry.id === id);
     if (!model) {
       throw new BridgeError(`Modèle inconnu : ${id}`, { status: 404, type: 'not_found_error' });
     }
@@ -179,23 +234,19 @@ async function handleRequest(req, res, config, log, startedAt) {
   });
 }
 
-async function handleMessages(req, res, config, requestId, log) {
-  checkAuth(req, config);
-
-  if (!config.apiKey) {
-    throw new BridgeError(
-      'GROQ_API_KEY manquante. Renseigne-la dans .env ou dans l’environnement, puis relance le proxy.',
-      { status: 500, type: 'configuration_error' },
-    );
-  }
-
+async function handleMessages(req, res, config, requestId, log, runtime) {
+  checkProxyAuth(req, config);
   const body = await readJson(req, config.bodyLimitBytes);
-  const { body: groqBody, meta } = anthropicToGroq(body, config);
+  const routingBody = config.forceTarget ? { ...body, model: config.forceTarget } : body;
+  const decision = decide(runtime, routingBody);
+  if (!decision.candidates.length) throw routeError(runtime, decision);
 
   log.debug(
-    `→ Groq ${meta.groqModel} stream=${meta.upstreamStream} messages=${groqBody.messages.length} tools=${groqBody.tools?.length || 0} max=${meta.maxTokens}`,
+    `→ ${decision.profileId} ${decision.candidates.map((candidate) => candidate.target).join(' → ')} ` +
+      `stream=${Boolean(body.stream)} tools=${body.tools?.length || 0} input≈${decision.inputTokens}`,
   );
 
+  const record = beginRequest(runtime, { body, decision, requestId });
   const controller = new AbortController();
   let clientClosed = false;
   res.on('close', () => {
@@ -205,17 +256,87 @@ async function handleMessages(req, res, config, requestId, log) {
     }
   });
 
-  let fetched;
-  try {
-    fetched = await requestGroq(config, groqBody, {
-      signal: controller.signal,
-      timeoutMs: meta.upstreamStream ? config.streamTimeoutMs : config.requestTimeoutMs,
-      stream: meta.upstreamStream,
+  let fetched = null;
+  let selected = null;
+  let meta = null;
+  let firstError = null;
+  for (const candidate of decision.candidates) {
+    if (clientClosed) break;
+    selected = candidate;
+    noteAttempt(runtime, record, candidate);
+    record.providerId = candidate.providerId;
+    record.modelId = candidate.modelId;
+    const routeConfig = {
+      ...config,
+      model: candidate.modelId,
+      smallModel: candidate.modelId,
+      maxOutputTokens: Math.min(
+        Number(config.maxOutputTokens || 32768),
+        Number(candidate.model.maxOutput || 32768),
+      ),
+    };
+    let translated;
+    try {
+      translated = anthropicToGroq(body, routeConfig, {
+        model: candidate.modelId,
+        modelInfo: candidate.model,
+        systemSuffix: decision.systemSuffix,
+        providerId: candidate.providerId,
+        profile: decision.profileId,
+      });
+    } catch (error) {
+      if (!firstError) firstError = error;
+      noteFailure(runtime, candidate, error);
+      continue;
+    }
+
+    try {
+      fetched = await requestUpstream(candidate.provider, translated.body, {
+        signal: controller.signal,
+        timeoutMs: translated.meta.upstreamStream
+          ? config.streamTimeoutMs
+          : config.requestTimeoutMs,
+        stream: translated.meta.upstreamStream,
+      });
+      meta = translated.meta;
+      break;
+    } catch (error) {
+      if (clientClosed) break;
+      if (!firstError) firstError = error;
+      noteFailure(runtime, candidate, error);
+      log.warn(
+        `Fallback ${candidate.target} → ${redactSecrets(error?.message || String(error))}`,
+      );
+    }
+  }
+
+  if (!fetched) {
+    const error =
+      firstError ||
+      new BridgeError('Aucun fournisseur disponible', {
+        status: 500,
+        type: 'configuration_error',
+      });
+    finishRequest(runtime, record, {
+      ok: false,
+      providerId: selected?.providerId,
+      modelId: selected?.modelId,
+      error: error.message,
+      status: error.status,
+      retryAfter: error.retryAfter,
+      skipProviderStats: true,
     });
-  } catch (error) {
     if (clientClosed) return;
     throw error;
   }
+
+  record.providerId = selected.providerId;
+  record.modelId = selected.modelId;
+  res.setHeader('x-hunter-profile', decision.profileId);
+  res.setHeader('x-hunter-provider', selected.providerId);
+  res.setHeader('x-hunter-model', selected.modelId);
+  res.setHeader('x-hunter-target', selected.target);
+  res.setHeader('x-hunter-fallback', String(Math.max(0, record.attempts.length - 1)));
 
   const { res: upstream, cleanup } = fetched;
   try {
@@ -240,6 +361,13 @@ async function handleMessages(req, res, config, requestId, log) {
             messageId: newId('msg_'),
           },
         );
+        finishRequest(runtime, record, {
+          ok: true,
+          providerId: selected.providerId,
+          modelId: selected.modelId,
+          inputTokens: meta.inputTokens,
+          outputTokens: result.usage?.output_tokens || 0,
+        });
         log.debug(
           `← stream ${result.stopReason} tools=${result.toolCount} tokens_out=${result.usage.output_tokens}`,
         );
@@ -252,7 +380,14 @@ async function handleMessages(req, res, config, requestId, log) {
               message: redactSecrets(bridgeError.message),
             },
           });
-          log.warn(`Stream interrompu : ${bridgeError.message}`);
+          finishRequest(runtime, record, {
+            ok: false,
+            providerId: selected.providerId,
+            modelId: selected.modelId,
+            error: bridgeError.message,
+            status: bridgeError.status,
+          });
+          log.warn(`Stream interrompu : ${redactSecrets(bridgeError.message)}`);
         }
       } finally {
         clearInterval(ping);
@@ -261,21 +396,30 @@ async function handleMessages(req, res, config, requestId, log) {
       return;
     }
 
-    // Réponse complète (streaming désactivé ou provider qui ignore stream:true).
     let json;
     try {
       json = await upstream.json();
     } catch (error) {
-      throw new BridgeError(`Réponse Groq invalide : ${error?.message || error}`, {
-        status: 502,
-        type: 'api_error',
-        cause: error,
-      });
+      throw new BridgeError(
+        `Réponse ${selected.provider.label} invalide : ${error?.message || error}`,
+        {
+          status: 502,
+          type: 'api_error',
+          cause: error,
+        },
+      );
     }
 
     const message = groqToAnthropicMessage(json, {
       ...meta,
       messageId: newId('msg_'),
+    });
+    finishRequest(runtime, record, {
+      ok: true,
+      providerId: selected.providerId,
+      modelId: selected.modelId,
+      inputTokens: meta.inputTokens,
+      outputTokens: message.usage?.output_tokens || 0,
     });
 
     if (meta.clientStream) {
@@ -288,6 +432,18 @@ async function handleMessages(req, res, config, requestId, log) {
     } else {
       sendJson(res, 200, message);
     }
+  } catch (error) {
+    if (!record.finished) {
+      const bridgeError = asBridgeError(error);
+      finishRequest(runtime, record, {
+        ok: false,
+        providerId: selected.providerId,
+        modelId: selected.modelId,
+        error: bridgeError.message,
+        status: bridgeError.status,
+      });
+    }
+    throw error;
   } finally {
     cleanup();
   }
@@ -295,172 +451,13 @@ async function handleMessages(req, res, config, requestId, log) {
 
 function bodyToAsyncIterable(body) {
   if (!body) {
-    throw new BridgeError('Groq a renvoyé un corps de stream vide', {
+    throw new BridgeError('Le fournisseur a renvoyé un corps de stream vide', {
       status: 502,
       type: 'api_error',
     });
   }
   if (typeof body[Symbol.asyncIterator] === 'function') return body;
   return Readable.fromWeb(body);
-}
-
-function listConfiguredModels(config) {
-  const seen = new Set();
-  const models = [];
-  // On expose à la fois les alias Claude Code et les vrais IDs Groq :
-  // Claude Code peut ainsi valider ANTHROPIC_MODEL, et l'utilisateur peut
-  // demander explicitement un modèle Groq.
-  const ids = [
-    config.claudeModel,
-    config.claudeSmallModel,
-    config.model,
-    config.smallModel,
-  ];
-  for (const id of ids) {
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    models.push({
-      type: 'model',
-      id,
-      display_name: id,
-      created_at: '2025-01-01T00:00:00Z',
-    });
-  }
-  return models;
-}
-
-function isAllowedHost(req, config) {
-  if (!config.allowedHosts || config.allowedHosts.length === 0) return true;
-  const host = hostnameOf(req.headers.host).toLowerCase();
-  if (!host) return true;
-  return config.allowedHosts.includes('*') || config.allowedHosts.includes(host);
-}
-
-function checkAuth(req, config) {
-  if (!config.proxyApiKey) return;
-  const tokens = extractTokens(req);
-  if (!tokens.some((token) => safeEqual(token, config.proxyApiKey))) {
-    throw new BridgeError('Jeton proxy invalide ou absent', {
-      status: 401,
-      type: 'authentication_error',
-    });
-  }
-}
-
-function extractTokens(req) {
-  const tokens = [];
-  const apiKey = req.headers['x-api-key'];
-  if (typeof apiKey === 'string' && apiKey) tokens.push(apiKey);
-  const authorization = req.headers.authorization;
-  if (typeof authorization === 'string' && authorization.toLowerCase().startsWith('bearer ')) {
-    tokens.push(authorization.slice('bearer '.length).trim());
-  }
-  return tokens;
-}
-
-function safeEqual(left, right) {
-  const a = Buffer.from(String(left));
-  const b = Buffer.from(String(right));
-  if (a.length !== b.length) return false;
-  return crypto.timingSafeEqual(a, b);
-}
-
-function readJson(req, limit) {
-  return new Promise((resolve, reject) => {
-    let size = 0;
-    let settled = false;
-    const chunks = [];
-
-    const fail = (error) => {
-      if (settled) return;
-      settled = true;
-      reject(error);
-    };
-
-    req.on('data', (chunk) => {
-      if (settled) return;
-      size += chunk.length;
-      if (size > limit) {
-        fail(
-          new BridgeError(`Corps de requête trop volumineux (max ${limit} octets)`, {
-            status: 413,
-            type: 'request_too_large',
-          }),
-        );
-        req.resume(); // draine sans mémoriser
-        return;
-      }
-      chunks.push(chunk);
-    });
-
-    req.on('end', () => {
-      if (settled) return;
-      settled = true;
-      try {
-        const text = Buffer.concat(chunks).toString('utf8');
-        resolve(text ? JSON.parse(text) : {});
-      } catch {
-        reject(
-          new BridgeError('JSON invalide dans le corps de la requête', {
-            status: 400,
-            type: 'invalid_request_error',
-          }),
-        );
-      }
-    });
-
-    req.on('error', (error) => {
-      fail(
-        new BridgeError(`Erreur de lecture de la requête : ${error?.message || error}`, {
-          status: 400,
-          type: 'invalid_request_error',
-          cause: error,
-        }),
-      );
-    });
-
-    req.on('aborted', () => {
-      fail(
-        new BridgeError('Requête interrompue par le client', {
-          status: 400,
-          type: 'invalid_request_error',
-        }),
-      );
-    });
-  });
-}
-
-function sendJson(res, status, payload) {
-  if (res.headersSent || res.writableEnded || res.destroyed) return;
-  const body = JSON.stringify(payload);
-  res.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-    'content-length': Buffer.byteLength(body),
-  });
-  res.end(body);
-}
-
-function sendError(res, error, requestId) {
-  const bridgeError = asBridgeError(error);
-  if (bridgeError.clientAborted) return;
-  if (res.headersSent || res.writableEnded || res.destroyed) {
-    if (!res.writableEnded && !res.destroyed) {
-      try {
-        res.end();
-      } catch {
-        // ignore
-      }
-    }
-    return;
-  }
-
-  const body = anthropicErrorBody(bridgeError, requestId);
-  body.error.message = redactSecrets(body.error.message);
-  if (bridgeError.retryAfter != null) {
-    res.setHeader('retry-after', String(Math.max(0, Math.ceil(bridgeError.retryAfter))));
-  }
-  sendJson(res, bridgeError.status, body);
 }
 
 export function listen(server, host, port) {

@@ -122,9 +122,12 @@ export function maxOutputFor(model, config) {
  * - jamais au-dessus de la limite du modèle ni du plafond configuré ;
  * - jamais au-dessus de la place restante dans le contexte (approximation).
  */
-export function clampMaxTokens(requested, model, config, estimatedInputTokens = 0) {
-  const hardLimit = maxOutputFor(model, config);
-  const contextLimit = contextFor(model);
+export function clampMaxTokens(requested, model, config, estimatedInputTokens = 0, modelMeta = null) {
+  const hardLimit = Math.min(
+    config.maxOutputTokens,
+    Number(modelMeta?.maxOutput) || maxOutputFor(model, config),
+  );
+  const contextLimit = Number(modelMeta?.context) || contextFor(model);
   const available = Math.max(256, contextLimit - Math.max(0, estimatedInputTokens) - 1024);
   const limit = Math.min(hardLimit, available);
   const value = Number.parseInt(String(requested ?? ''), 10);

@@ -15,6 +15,7 @@ export const DEFAULTS = Object.freeze({
   streaming: true,
   claudeModel: 'claude-sonnet-4-5',
   claudeSmallModel: 'claude-3-5-haiku-latest',
+  adminToken: '',
 });
 
 const LOG_LEVELS = new Set(['debug', 'info', 'warn', 'error']);
@@ -96,13 +97,16 @@ export function buildConfig(env = process.env, overrides = {}) {
         env.ANTHROPIC_SMALL_FAST_MODEL ??
         DEFAULTS.claudeSmallModel,
     ).trim() || DEFAULTS.claudeSmallModel,
+    adminToken: String(overrides.adminToken ?? env.HUNTER_ADMIN_TOKEN ?? '').trim(),
+    configPath: String(overrides.configPath ?? env.HUNTER_CONFIG ?? '').trim(),
+    forceTarget: String(overrides.forceTarget ?? env.HUNTER_TARGET ?? '').trim(),
   };
 }
 
 /** Vue publique : jamais de clé API, jamais de jeton proxy. */
 export function publicConfig(config) {
   return {
-    service: 'groq-claude-bridge',
+    service: 'hunter-bridge',
     upstream: config.groqBaseUrl,
     models: {
       big: config.model,

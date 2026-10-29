@@ -1,17 +1,20 @@
 {
-  "name": "groq-claude-bridge",
-  "version": "0.1.0",
-  "description": "Proxy local Anthropic Messages API -> Groq (OpenAI-compatible) pour Claude Code",
+  "name": "hunter-bridge",
+  "version": "0.2.0",
+  "description": "Hunter Bridge — proxy Anthropic Messages multi-fournisseurs, dashboard, routage CTF/bug bounty, MCP et plugins pour Claude Code",
   "type": "module",
   "bin": {
+    "hunter": "./bin/hunter.js",
     "groqcc": "./bin/groqcc.js"
   },
   "scripts": {
-    "start": "node bin/groqcc.js start",
-    "claude": "node bin/groqcc.js claude",
-    "doctor": "node bin/groqcc.js doctor",
-    "models": "node bin/groqcc.js models",
-    "env": "node bin/groqcc.js env",
+    "start": "node bin/hunter.js start",
+    "up": "node bin/hunter.js start",
+    "claude": "node bin/hunter.js claude",
+    "doctor": "node bin/hunter.js doctor",
+    "models": "node bin/hunter.js models",
+    "env": "node bin/hunter.js env",
+    "init": "node bin/hunter.js init",
     "test": "node --test test/"
   },
   "engines": {
@@ -19,15 +22,23 @@
   },
   "keywords": [
     "claude-code",
+    "hunter-bridge",
     "groq",
+    "opencode-zen",
+    "nvidia-nim",
+    "gemini",
     "anthropic",
     "proxy",
+    "ctf",
+    "bug-bounty",
+    "mcp",
     "llm"
   ],
   "license": "MIT",
   "files": [
     "bin",
     "src",
+    "public",
     "README.md",
     ".env.example",
     "LICENSE"

@@ -25,8 +25,8 @@ VIDE=
 });
 
 test('loadEnvFile remplit une variable présente mais vide', () => {
-  const file = path.join(os.tmpdir(), `groqcc-env-${process.pid}-${Date.now()}.env`);
-  const key = 'GROQCC_TEST_EMPTY_VALUE';
+  const file = path.join(os.tmpdir(), `hunter-env-${process.pid}-${Date.now()}.env`);
+  const key = 'HUNTER_TEST_EMPTY_VALUE';
   fs.writeFileSync(file, `${key}=depuis-le-fichier\n`);
   process.env[key] = '';
   try {

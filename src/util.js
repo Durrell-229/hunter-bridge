@@ -67,7 +67,19 @@ export function maskKey(key) {
 export function redactSecrets(text) {
   return String(text ?? '')
     .replace(/gsk_[A-Za-z0-9_-]{8,}/g, 'gsk_***')
+    .replace(/nvapi-[A-Za-z0-9_-]{8,}/g, 'nvapi-***')
+    .replace(/AIza[0-9A-Za-z_-]{16,}/g, 'AIza***')
+    .replace(/sk-[A-Za-z0-9_-]{8,}/g, 'sk-***')
+    .replace(/(x-goog-api-key\s*[:=]\s*)\S+/gi, '$1***')
     .replace(/Bearer\s+[A-Za-z0-9._~+/-]{8,}/gi, 'Bearer ***');
+}
+
+/** Masque les jetons passés en query string dans les logs HTTP. */
+export function redactUrl(value) {
+  return String(value ?? '').replace(
+    /([?&](?:token|api[_-]?key|key|auth)=)[^&\s]*/gi,
+    '$1***',
+  );
 }
 
 export function safeJsonParse(text, fallback = null) {

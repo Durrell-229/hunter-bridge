@@ -1,355 +1,403 @@
-# groq-claude-bridge
+# Hunter Bridge
 
-**Utilise les modèles Groq avec Claude Code**, via un proxy local qui expose l'API Anthropic Messages (`/v1/messages`) et la traduit vers l'API OpenAI-compatible de Groq.
+**Hunter Bridge** est un pont local entre l’API Anthropic Messages (utilisée par Claude Code) et plusieurs fournisseurs de modèles OpenAI-compatibles :
 
-```
-Claude Code ──(Anthropic Messages + SSE)──▶ groqcc ──(OpenAI Chat Completions + SSE)──▶ Groq
-             127.0.0.1:8787
-```
+- **Groq**
+- **OpenCode Zen**
+- **NVIDIA NIM**
+- **Google Gemini**
 
-Zéro dépendance npm. Node.js ≥ 18.17. Conçu pour tourner en local, sur `127.0.0.1`.
+Il ajoute un **routeur de modèles**, un **harnais de décision** orienté CTF / bug bounty, un **dashboard d’administration temps réel**, la gestion des **serveurs MCP** et des **plugins Claude Code**, ainsi qu’un lancement unifié.
+
+> Projet autonome, zéro dépendance npm, Node.js ≥ 18.17, modules ESM, tests avec `node:test`.
 
 ---
 
-## Ce que fait le pont
+## Pourquoi Hunter Bridge ?
 
-- `POST /v1/messages` en **streaming SSE** et en **non-streaming**.
-- Traduction des **outils** : `tool_use` Anthropic → `tool_calls` OpenAI, `tool_result` → messages `tool`.
-- Traduction des événements SSE Anthropic : `message_start`, `content_block_start`, `content_block_delta` (`text_delta` / `input_json_delta`), `content_block_stop`, `message_delta`, `message_stop`.
-- Système, messages user/assistant, images (si le modèle Groq les accepte), `temperature`, `top_p`, `stop_sequences`.
-- Mapping des noms de modèles Claude Code :
-  - `sonnet` / `opus` / `claude-*` → `GROQ_MODEL`
-  - `haiku` → `GROQ_SMALL_MODEL`
-  - un ID Groq explicite (`openai/gpt-oss-120b`, `llama-3.3-70b-versatile`, …) est respecté.
-- `POST /v1/messages/count_tokens` (estimation), `GET /v1/models`, `GET /health`.
-- Retries sur `429` / `5xx`, respect de `retry-after`, repli automatique si un modèle refuse `max_completion_tokens` ou `stream_options`.
-- Aucune clé API dans les logs.
+Claude Code parle uniquement l’API Anthropic. Hunter Bridge traduit ses requêtes vers des fournisseurs OpenAI-compatibles, puis traduit les réponses et les tool calls dans l’autre sens.
+
+Au-delà du proxy, Hunter Bridge apporte :
+
+- un **classifieur local** qui détecte une tâche `ctf`, `bugbounty`, `pwn`, `rev`, `web`, `crypto`, `forensics`, `recon`, etc. ;
+- des **profils de routage** avec chaînes de repli par fournisseur ;
+- des **consignes de harnais** injectées dans le prompt système selon le profil ;
+- un **fallback automatique** sur 429, 5xx, timeout, 401/403 ou modèle incompatible ;
+- un **dashboard** pour changer les profils, les chaînes, les clés, les modèles MCP et les plugins à chaud ;
+- un **lanceur unique** : proxy + dashboard + MCP + plugins + Claude Code.
 
 ---
 
 ## Démarrage rapide
 
-### 1. Prérequis
-
-- Node.js **18.17 ou plus récent** (`node -v`).
-- Une clé Groq : <https://console.groq.com/keys>.
-- Claude Code :
-
 ```bash
-npm install -g @anthropic-ai/claude-code
-claude --version
+cd ~/Bureau/hunter-bridge
+npm run init
 ```
 
-### 2. Configurer la clé Groq
+`init` crée `hunter.config.json` (sans secret) et `.env` à partir de `.env.example`.
 
-```bash
-cd ~/Bureau/groq-claude-bridge
-cp .env.example .env
-chmod 600 .env
-```
-
-Ouvre `.env` et renseigne :
+Renseigne **au moins une clé** dans `.env` :
 
 ```dotenv
 GROQ_API_KEY=gsk_...
+OPENCODE_API_KEY=...
+NVIDIA_API_KEY=nvapi-...
+GEMINI_API_KEY=...
 ```
 
-> Ne colle pas ta clé dans un chat. Elle doit rester dans `.env` (ou dans une variable d'environnement).
-
-### 3. Vérifier
+Puis :
 
 ```bash
-npm run doctor
-npm run doctor -- --chat     # test réel : consomme quelques tokens
+npm run doctor -- --chat
+npm run claude -- --profile ctf
 ```
 
-### 4. Lancer Claude Code
+- `npm run doctor -- --chat` vérifie les clés, les endpoints et fait un vrai petit appel.
+- `npm run claude -- --profile ctf` démarre le proxy, le dashboard, génère la config MCP, puis lance Claude Code avec le profil CTF.
 
-La commande la plus simple démarre le proxy sur un port libre, puis lance Claude Code avec les bonnes variables :
+> **Ne colle jamais une clé API dans un chat, un ticket ou un fichier versionné.** Si une clé a été exposée, révoque-la et remplace-la.
+
+---
+
+## Deux façons de lancer
+
+### Tout-en-un
 
 ```bash
-npm run claude
+npm run claude -- --profile ctf
 ```
 
-Pour passer des arguments à Claude Code, ajoute-les après le nom de la commande :
+Cette commande :
+
+1. démarre le proxy Anthropic → fournisseurs ;
+2. sert le dashboard sur `http://127.0.0.1:8787/dashboard` ;
+3. écrit `.hunter/mcp.json` si des serveurs MCP sont configurés ;
+4. passe les dossiers de plugins à Claude Code ;
+5. lance `claude` avec les bonnes variables d’environnement.
+
+Les arguments après `--` sont transmis à Claude Code :
 
 ```bash
-npm run claude -- --resume
-npm run claude -- --model sonnet
-# ou directement
-./bin/groqcc.js claude --resume
+npm run claude -- --profile bugbounty -- --resume
 ```
 
-Les options du proxy (`--port`, `--host`, `--model openai/...`) se placent avant les arguments de Claude Code. Une valeur de `--model` qui ressemble à un modèle Claude (`sonnet`, `opus`, `haiku`, `claude-...`) est transmise à Claude Code ; pour choisir le modèle Groq, utilise plutôt `GROQ_MODEL` dans `.env`.
-
-### Mode deux terminaux
+### Proxy seul
 
 ```bash
-# Terminal 1
 npm start
+# dashboard : http://127.0.0.1:8787/dashboard
+```
 
-# Terminal 2
-source <(node bin/groqcc.js env)
+Puis, dans un autre terminal :
+
+```bash
+source <(node bin/hunter.js env)
 claude
 ```
 
-Sous fish :
+### Commandes
 
-```fish
-node bin/groqcc.js env --shell fish | source
+| Commande | Rôle |
+|---|---|
+| `npm run init` | crée la configuration et `.env` si absent |
+| `npm start` / `npm run up` | proxy + dashboard |
+| `npm run claude -- --profile ctf` | tout lancer puis Claude Code |
+| `npm run doctor -- --chat` | diagnostic complet + test réel |
+| `npm run models` | modèles locaux/découverts par fournisseur |
+| `npm run env` | variables d’environnement Claude Code |
+| `npm test` | suite de tests |
+
+Options utiles : `--profile`, `--provider`, `--config`, `--env-file`, `--port`, `--host`, `--no-mcp`, `--no-plugins`, `--json`.
+
+---
+
+## Dashboard
+
+Ouvrir <http://127.0.0.1:8787/dashboard>.
+
+Onglets :
+
+- **Vue d’ensemble** : requêtes, erreurs, tokens, fallbacks, état des fournisseurs, dernière décision du routeur.
+- **Fournisseurs** : activer/désactiver, tester, découvrir les modèles, saisir une clé.
+- **Routage** : profil actif, chaînes de modèles, mots-clés du classifieur, consignes du harnais.
+- **MCP** : ajouter/modifier/supprimer des serveurs stdio, HTTP ou SSE, exporter `mcp.json`.
+- **Plugins** : ajouter/retirer des dossiers `--plugin-dir`.
+- **Journal** : requêtes récentes, modèle réellement utilisé, latence, tokens, erreurs.
+
+Les mises à jour arrivent en **SSE** (`/api/events`). Le dashboard ne renvoie jamais les clés complètes : seulement `clé configurée/absente` et un masque.
+
+Sécurité :
+
+- par défaut, écoute sur `127.0.0.1` ;
+- si `HUNTER_ADMIN_TOKEN` est défini, les routes admin exigent `Authorization: Bearer …` ou `x-hunter-admin` ;
+- sans jeton, les routes admin ne sont accessibles que depuis la loopback ;
+- les clés saisies dans le dashboard sont écrites dans `.env` en mode `600` ;
+- `hunter.config.json` et `.hunter/mcp.json` sont en mode `600` et gitignorés ;
+- aucun corps de requête n’est journalisé.
+
+---
+
+## Fournisseurs
+
+| ID | Fournisseur | Base URL | Variable de clé |
+|---|---|---|---|
+| `groq` | Groq | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
+| `opencode` | OpenCode Zen | `https://opencode.ai/inference/openai/v1` | `OPENCODE_API_KEY` |
+| `nvidia` | NVIDIA NIM | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
+| `gemini` | Google Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `GEMINI_API_KEY` |
+
+Alias acceptés : `zen`, `opencodezen`, `nim`, `nvidia-nim`, `google`.
+
+### Syntaxe des modèles
+
+```text
+fournisseur/modèle
+```
+
+Exemples :
+
+```text
+groq/openai/gpt-oss-120b
+opencode/claude-sonnet-4-5
+nvidia/deepseek-ai/deepseek-r1
+gemini/gemini-2.5-pro
+```
+
+Un ID Groq brut (`openai/gpt-oss-120b`) reste accepté pour la compatibilité. `sonnet`, `opus` et `haiku` sont des alias Claude Code routés par le profil actif.
+
+Les catalogues locaux sont fournis à titre indicatif. Utilise **Découvrir les modèles** dans le dashboard ou `npm run models` pour interroger chaque fournisseur et ajouter les IDs disponibles.
+
+---
+
+## Routage et harnais agentique
+
+Profils fournis :
+
+| Profil | Usage |
+|---|---|
+| `auto` | classifie la demande puis choisit la meilleure chaîne disponible |
+| `fast` | faible latence, faible coût |
+| `code` | développement, débogage, tests |
+| `bugbounty` | scope, recon, web/API, preuves |
+| `ctf` | challenges difficiles, multi-étapes |
+| `recon` | DNS, sous-domaines, OSINT, surface d’attaque |
+| `web` | XSS, SSRF, IDOR, JWT, logique métier |
+| `pwn` | binaire, mémoire, ROP, heap |
+| `rev` | Ghidra/IDA, firmware, APK, obfuscation |
+| `crypto` | RSA, ECC, lattices, PRNG |
+| `forensics` | PCAP, mémoire, disque, stégano, malware |
+| `general` | assistant technique polyvalent |
+
+Chaque profil contient :
+
+- une **chaîne de cibles** (`fournisseur/modèle`) essayées dans l’ordre ;
+- des **mots-clés** pour le classifieur local ;
+- une **consigne de harnais** ajoutée au prompt système.
+
+Le routeur filtre automatiquement les cibles :
+
+- fournisseur désactivé ;
+- clé absente ;
+- modèle sans support des outils alors que Claude Code envoie des tools ;
+- contexte insuffisant ;
+- fournisseur en cooldown après 429/5xx.
+
+En cas d’échec, il passe à la cible suivante. Les en-têtes de réponse indiquent la décision :
+
+```text
+x-hunter-profile: ctf
+x-hunter-provider: groq
+x-hunter-model: openai/gpt-oss-120b
+x-hunter-target: groq/openai/gpt-oss-120b
+x-hunter-fallback: 0
+```
+
+Pour un challenge difficile :
+
+```bash
+npm run claude -- --profile ctf
+```
+
+Pour laisser le classifieur choisir :
+
+```bash
+npm run claude -- --profile auto
 ```
 
 ---
 
-## Modèles recommandés
+## MCP
 
-| Modèle Groq | Contexte | Sortie max | Outils | Usage |
-|---|---:|---:|---|---|
-| `openai/gpt-oss-120b` | 131 072 | 65 536 | oui | **Défaut** : bon compromis outils / rapidité / prix |
-| `openai/gpt-oss-20b` | 131 072 | 65 536 | oui | Petit modèle pour les tâches « haiku » |
-| `llama-3.3-70b-versatile` | 131 072 | 32 768 | oui | Alternative Llama |
-| `qwen/qwen3.6-27b` | 131 072 | 16 384 | oui, parallèles | Bon pour les outils parallèles |
-| `moonshotai/kimi-k2-instruct-0905` | 262 144 | 16 384 | oui | Grand contexte, plus cher |
+Ajoute un serveur dans le dashboard, ou édite directement `hunter.config.json` :
 
-Configure-les dans `.env` :
-
-```dotenv
-GROQ_MODEL=openai/gpt-oss-120b
-GROQ_SMALL_MODEL=openai/gpt-oss-20b
+```json
+{
+  "mcp": {
+    "servers": [
+      {
+        "name": "github",
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_TOKEN": "${GITHUB_TOKEN}" },
+        "enabled": true
+      },
+      {
+        "name": "remote",
+        "type": "http",
+        "url": "http://127.0.0.1:3000/mcp",
+        "headers": { "Authorization": "Bearer ${MCP_TOKEN}" },
+        "enabled": true
+      }
+    ]
+  }
+}
 ```
 
-> **Important** : Claude Code envoie un gros prompt système et beaucoup d'outils. Le free tier Groq (TPM faible) va très vite renvoyer des `429`. Pour un usage réel, prends un plan Developer.
+Les valeurs `${VAR}` sont résolues depuis `.env` au moment de générer `.hunter/mcp.json`. Le fichier est en mode `600`.
 
-Liste les modèles réellement disponibles avec ta clé :
-
-```bash
-npm run models
-```
+`npm run claude` ajoute automatiquement `--mcp-config .hunter/mcp.json`. Utilise `--no-mcp` pour désactiver.
 
 ---
 
-## Variables de configuration
+## Plugins Claude Code
 
-| Variable | Défaut | Rôle |
-|---|---|---|
-| `GROQ_API_KEY` | — | **Obligatoire**. Clé Groq. |
-| `GROQ_MODEL` | `openai/gpt-oss-120b` | Modèle principal (sonnet/opus). |
-| `GROQ_SMALL_MODEL` | `openai/gpt-oss-20b` | Petit modèle (haiku). |
-| `HOST` | `127.0.0.1` | Adresse d'écoute. Ne pas exposer par défaut. |
-| `PORT` | `8787` | Port d'écoute (`0` = port libre, utile pour `claude`). |
-| `PROXY_API_KEY` | vide | Jeton optionnel exigé par le proxy. |
-| `MAX_OUTPUT_TOKENS` | `32768` | Plafond de tokens de sortie. |
-| `REQUEST_TIMEOUT_MS` | `300000` | Timeout d'une requête non-streamée. |
-| `STREAM_TIMEOUT_MS` | `900000` | Timeout d'un stream complet. |
-| `BODY_LIMIT_BYTES` | `26214400` | Taille max du corps JSON (images incluses). |
-| `GROQ_RETRIES` | `1` | Retries sur 429 / 5xx / erreur réseau. |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, `error`. |
-| `STREAMING` | `1` | `0` désactive le streaming vers Groq (le proxy synthétise le SSE). |
-| `ALLOWED_HOSTS` | loopback | Liste d'en-têtes `Host` acceptés, séparés par des virgules. |
-| `CLAUDE_MODEL` | `claude-sonnet-4-5` | Nom de modèle envoyé par Claude Code. |
-| `CLAUDE_SMALL_MODEL` | `claude-3-5-haiku-latest` | Nom du petit modèle envoyé par Claude Code. |
+Ajoute des dossiers de plugins dans le dashboard (onglet **Plugins**) ou dans `hunter.config.json` :
 
-### Protection par jeton
-
-```dotenv
-PROXY_API_KEY=un-jeton-local
+```json
+{ "plugins": { "paths": ["~/plugins/mon-plugin"] } }
 ```
 
-`npm run claude` transmet automatiquement ce jeton. En mode deux terminaux, remplace le placeholder affiché par `groqcc env` :
-
-```bash
-export ANTHROPIC_AUTH_TOKEN='un-jeton-local'
-```
-
-Le proxy accepte aussi `x-api-key` / `ANTHROPIC_API_KEY`, mais évite de définir les deux variables à la fois : Claude Code peut signaler un conflit d'authentification. `npm run claude` utilise uniquement `ANTHROPIC_AUTH_TOKEN`.
+Un plugin valide contient `.claude-plugin/plugin.json`. Les dossiers valides sont passés à Claude Code via `--plugin-dir`. Utilise `--no-plugins` pour désactiver.
 
 ---
 
-## Ce que Claude Code reçoit
+## Variables Claude Code
 
-`npm run claude` positionne notamment :
+`hunter claude` configure notamment :
 
-```bash
+```text
 ANTHROPIC_BASE_URL=http://127.0.0.1:<port>
-ANTHROPIC_AUTH_TOKEN=<jeton local>
+ANTHROPIC_AUTH_TOKEN=local-hunter-bridge
 ANTHROPIC_MODEL=claude-sonnet-4-5
 ANTHROPIC_SMALL_FAST_MODEL=claude-3-5-haiku-latest
-ANTHROPIC_DEFAULT_SONNET_MODEL=claude-sonnet-4-5
-ANTHROPIC_DEFAULT_OPUS_MODEL=claude-sonnet-4-5
-ANTHROPIC_DEFAULT_HAIKU_MODEL=claude-3-5-haiku-latest
-CLAUDE_CODE_MAX_OUTPUT_TOKENS=32768
-CLAUDE_CODE_MAX_CONTEXT_TOKENS=131072
-CLAUDE_CODE_AUTO_COMPACT_WINDOW=114688
-API_TIMEOUT_MS=900000
-CLAUDE_CODE_ATTRIBUTION_HEADER=0
+CLAUDE_CODE_MAX_CONTEXT_TOKENS=<min des contextes disponibles>
+CLAUDE_CODE_AUTO_COMPACT_WINDOW=<contexte - marge>
+CLAUDE_CODE_MAX_OUTPUT_TOKENS=<min des limites>
 ENABLE_TOOL_SEARCH=false
-CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
 ```
 
-`CLAUDE_CODE_MAX_CONTEXT_TOKENS` déclare à Claude Code la vraie fenêtre du modèle Groq. `CLAUDE_CODE_AUTO_COMPACT_WINDOW` est calculé avec une marge de 16 384 tokens (par exemple 114 688 pour 131 072) pour que Claude Code compacte avant d'atteindre la limite de Groq. `CLAUDE_CODE_MAX_OUTPUT_TOKENS` est borné par la limite du modèle et `MAX_OUTPUT_TOKENS`. `ENABLE_TOOL_SEARCH=false` charge les outils MCP dès le départ : le tool search de Claude Code n'est pas traduit vers Groq.
+`ANTHROPIC_API_KEY`, Bedrock, Vertex, Foundry et Mantle sont retirés de l’environnement enfant pour éviter un routage involontaire.
 
-Le proxy traduit ensuite ces noms vers `GROQ_MODEL` / `GROQ_SMALL_MODEL`.
+Si Claude Code n’est pas dans le `PATH`, Hunter Bridge cherche aussi :
 
----
-
-## Architecture interne
-
-```
-bin/groqcc.js       CLI : start, claude, doctor, models, env
-src/server.js       serveur HTTP, routes, auth, SSE, erreurs Anthropic
-src/translate.js    Anthropic Messages ⇄ OpenAI Chat Completions
-src/groq.js         client Groq : fetch, retries, fallback, timeouts
-src/sse.js          parseur SSE + writer SSE Anthropic
-src/models.js       mapping des modèles, limites de contexte/sortie
-src/config.js       configuration et valeurs par défaut
-src/env.js          lecture .env sans dépendance
-src/errors.js       erreurs normalisées Anthropic
-```
-
-### Flux d'une requête
-
-1. Claude Code envoie `POST /v1/messages` (souvent `stream: true`) avec `x-api-key` ou `Authorization: Bearer`.
-2. Le proxy vérifie le jeton local éventuel, traduit la requête et appelle Groq.
-3. Groq répond en SSE OpenAI (`choices[].delta`, `tool_calls`, `usage`).
-4. Le proxy réémet des événements SSE Anthropic, avec les blocs `text` et `tool_use`.
-5. Claude Code exécute les outils et renvoie les `tool_result` dans la requête suivante.
-
----
-
-## Limites connues
-
-- **Comptage de tokens approximatif** : `count_tokens` utilise une heuristique (~3,5 caractères/token), pas un tokenizer exact.
-- **Pas de prompt caching** : les blocs `cache_control` sont ignorés.
-- **Pas de blocs `thinking` en retour** : le budget de réflexion est traduit en `reasoning_effort` pour les modèles qui le supportent, mais Claude Code ne reçoit pas de blocs de raisonnement signés.
-- **Outils serveur Anthropic ignorés** : `web_search`, `computer`, etc. ne sont pas exécutés par Groq. Les outils custom et MCP sont transmis.
-- **Images** : envoyées en `image_url` ; seuls les modèles Groq vision les acceptent.
-- **Documents** : les documents texte sont transmis ; les PDF base64/URL sont remplacés par un marqueur, pas extraits.
-- **Qualité du tool use** : dépend du modèle Groq. `openai/gpt-oss-120b` est le choix par défaut.
-- **Contexte et sortie** : `max_tokens` est borné par le modèle et par la place restante estimée dans le contexte.
-- **Streaming des tool_calls** : les appels d'outils sont bufferisés puis émis en fin de message. Claude Code les reçoit correctement, mais pas token par token.
+- `~/.local/bin/claude`
+- `~/.claude/local/claude`
+- `~/.npm-global/bin/claude`
+- `/usr/local/bin/claude`
+- `HUNTER_CLAUDE_BIN`
 
 ---
 
 ## Dépannage
 
-### `401` / `Invalid API key`
+### `413 Request too large` / limite TPM Groq
 
-- Vérifie `GROQ_API_KEY` dans `.env`.
-- Si `PROXY_API_KEY` est défini, Claude Code doit envoyer ce jeton, pas la clé Groq.
-- Teste : `npm run doctor -- --chat`.
+Le plan gratuit Groq est limité à **8 000 TPM**. Une requête Claude Code complète peut dépasser cette limite (souvent 20k–25k tokens). Solutions :
 
-### `404` / modèle inconnu
+1. passer au **Dev Tier** Groq ;
+2. utiliser un autre fournisseur (OpenCode Zen, Gemini, NVIDIA) ;
+3. réduire le nombre d’outils et le prompt système ;
+4. utiliser le profil `fast` et un petit modèle ;
+5. accepter un mode minimal avec `--tools 'Read,Edit,Write,Bash'`.
 
-```bash
-npm run models
-```
+Hunter Bridge journalise le fallback et le cooldown dans le dashboard.
 
-Puis mets un ID présent dans la liste dans `GROQ_MODEL` / `GROQ_SMALL_MODEL`.
+### `401` / clé invalide
 
-### `429` / rate limit
+- Vérifie la variable indiquée par le fournisseur.
+- Révoque toute clé exposée et recrée-la.
+- Dans le dashboard, la clé n’est jamais réaffichée : saisis-la à nouveau.
 
-- Le plan Groq est trop limité pour Claude Code (surtout le free tier).
-- Le proxy respecte `retry-after` et retente une fois.
-- Réduis la taille du contexte, ou passe à un plan supérieur.
+### `Aucun modèle disponible`
 
-### `413` / `Request too large ... TPM`
+- Vérifie qu’au moins une clé est configurée.
+- Vérifie que le fournisseur est activé.
+- Vérifie que le modèle supporte les outils si Claude Code en envoie.
+- Regarde `Candidats écartés` dans l’erreur ou la dernière décision du dashboard.
 
-Avec le plan gratuit Groq, `openai/gpt-oss-120b` est limité à **8 000 tokens par minute**. Claude Code complet envoie environ **23 000 tokens** avant même le premier message (prompt système + outils), donc Groq refuse la requête :
+### Dashboard inaccessible
 
-```text
-413: Request too large ... Limit 8000, Requested 23583
-```
+- `http://127.0.0.1:8787/dashboard`
+- Si `HUNTER_ADMIN_TOKEN` est défini, saisis-le dans la fenêtre d’accès.
+- Si `HOST=0.0.0.0`, définis impérativement `HUNTER_ADMIN_TOKEN`.
 
-Deux options :
+### MCP ne démarre pas
 
-1. Passer au **Groq Dev Tier** (recommandé pour coder avec Claude Code) :
-   <https://console.groq.com/settings/billing>
-2. Tester un mode Claude Code réduit, pour une réponse simple :
+- Teste la commande manuellement.
+- Vérifie les variables `${...}` dans `.env`.
+- Regarde `.hunter/mcp.json` (mode 600).
+- Utilise `--no-mcp` pour isoler le problème.
 
-```bash
-npm run claude -- \
-  --tools 'Read,Edit,Write,Bash' \
-  --system-prompt 'Tu es un assistant de codage concis. Utilise les outils quand cela est nécessaire.'
-```
-
-Ce mode supprime la plupart des outils et le prompt système complet de Claude Code. Il peut passer sous 8 000 tokens pour une requête, mais les boucles d'outils dépassent vite cette limite. Pour un usage réel de Claude Code, le Dev Tier reste nécessaire.
-
-### `400` / outil ou schéma refusé
-
-- Essaie `GROQ_MODEL=openai/gpt-oss-120b`.
-- Un outil MCP avec un schéma JSON complexe peut être refusé par Groq.
-- Lance avec `LOG_LEVEL=debug npm start` pour voir le modèle, le nombre d'outils et les erreurs.
-
-### Claude Code continue d'appeler Anthropic
-
-Vérifie :
-
-```bash
-env | grep ANTHROPIC
-```
-
-`ANTHROPIC_BASE_URL` doit pointer vers `http://127.0.0.1:<port>`. Le plus simple est `npm run claude`, qui injecte les variables lui-même.
-
-### `claude` introuvable
+### Claude Code introuvable
 
 ```bash
 npm install -g @anthropic-ai/claude-code
-```
-
-### Le stream se bloque
-
-Essaie :
-
-```bash
-npm start -- --no-stream
-```
-
-ou dans `.env` :
-
-```dotenv
-STREAMING=0
-```
-
-Le proxy attend alors la réponse complète de Groq et fabrique les événements SSE Anthropic.
-
-### Port déjà utilisé
-
-```bash
-npm start -- --port 8788
+# ou
+export HUNTER_CLAUDE_BIN=/chemin/vers/claude
 ```
 
 ---
 
-## Sécurité
+## Tests et vérification
 
-- Par défaut, le proxy écoute uniquement sur `127.0.0.1`.
-- Le fichier `.env` doit être en `chmod 600`.
-- Les clés ne sont jamais journalisées ; les messages d'erreur sont expurgés (`gsk_***`).
-- Un contrôle de l'en-tête `Host` limite les attaques de type DNS rebinding.
-- `PROXY_API_KEY` ajoute une authentification locale.
-- **Ne pas exposer le proxy sur Internet.** Si tu dois le faire (Docker, réseau local), mets un `PROXY_API_KEY` solide, un pare-feu, et idéalement un reverse proxy TLS.
+```bash
+npm test
+bash scripts/verify.sh
+```
+
+La suite couvre : traduction Anthropic ↔ OpenAI, streaming SSE, tool calls, erreurs, auth, dashboard, routage multi-fournisseurs, fallback, MCP, plugins, configuration et permissions de fichiers.
+
+Les tests n’utilisent ni réseau ni clé réelle.
 
 ---
 
-## Développement
+## Structure
 
-```bash
-npm test                 # tests unitaires + e2e avec un faux Groq
-bash scripts/verify.sh   # syntaxe + tests
+```text
+bin/hunter.js          CLI principale
+bin/groqcc.js          alias de compatibilité
+src/config.js          variables d’environnement et limites
+src/settings.js        configuration Hunter, fournisseurs, profils
+src/router.js          classifieur, cibles, sélection des candidats
+src/runtime.js         état, métriques, persistance, événements
+src/upstream.js        client OpenAI-compatible générique
+src/server.js          serveur Anthropic Messages + SSE
+src/dashboard.js       API admin et SSE
+src/mcp.js             MCP, plugins, génération de config
+src/translate.js       traduction Anthropic ↔ OpenAI
+src/http.js            helpers HTTP, auth, erreurs
+public/                dashboard statique (zéro build)
+test/                  tests node:test
+scripts/verify.sh      syntaxe + config + tests
+hunter.config.json     configuration locale (gitignorée, 600)
+.env                   clés API (gitignoré, 600)
+.hunter/mcp.json       config MCP générée (gitignorée, 600)
 ```
 
-Structure des tests :
+---
 
-- `test/translate.test.js` : traduction Anthropic ⇄ OpenAI, outils, images.
-- `test/sse.test.js` : parseur SSE et writer Anthropic.
-- `test/server.test.js` : serveur réel + faux upstream Groq (stream, tools, erreurs, auth).
-- `test/config.test.js` : `.env`, configuration, secrets.
-- `test/models.test.js` : mapping et limites.
+## Limites connues
 
-Aucune dépendance npm : uniquement `node:test`, `node:http`, `fetch`.
+- Les catalogues de modèles évoluent : utilise la découverte `/models` du dashboard.
+- Les fournisseurs OpenAI-compatibles ont des différences de schéma ; Hunter Bridge applique des variantes de repli, mais certains modèles peuvent refuser les tools ou le streaming.
+- Le streaming ne peut pas basculer de fournisseur après l’envoi des premiers octets ; le fallback se fait avant le début du flux.
+- Le classifieur est déterministe et local (mots-clés), volontairement rapide et sans coût. Il peut être remplacé plus tard par un petit modèle juge.
+- Le plan gratuit Groq reste insuffisant pour Claude Code complet.
 
 ---
 
 ## Licence
 
-MIT. Voir [LICENSE](./LICENSE).
+MIT.

@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Hunter Bridge — Console</title>
+    <link rel="stylesheet" href="/dashboard/app.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <div class="logo">HB</div>
+        <div>
+          <h1>Hunter Bridge</h1>
+          <p id="subtitle">Routage multi-fournisseurs pour Claude Code</p>
+        </div>
+      </div>
+      <div class="top-actions">
+        <span id="service-state" class="pill muted">connexion…</span>
+        <label class="profile-picker">
+          <span>Profil</span>
+          <select id="active-profile"></select>
+        </label>
+        <button id="refresh-btn" class="secondary" type="button">Actualiser</button>
+      </div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+      <button data-tab="overview" class="active" type="button">Vue d’ensemble</button>
+      <button data-tab="providers" type="button">Fournisseurs</button>
+      <button data-tab="routing" type="button">Routage</button>
+      <button data-tab="mcp" type="button">MCP</button>
+      <button data-tab="plugins" type="button">Plugins</button>
+      <button data-tab="logs" type="button">Journal</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" class="tab-panel active">
+        <div id="overview-cards" class="cards"></div>
+        <div class="split">
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Fournisseurs</h2>
+              <span class="muted" id="provider-summary"></span>
+            </div>
+            <div id="overview-providers" class="provider-grid"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2>Dernière décision</h2>
+              <span class="muted">routeur local</span>
+            </div>
+            <div id="last-decision" class="decision"></div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Requêtes récentes</h2>
+            <span class="muted">sans contenu des prompts</span>
+          </div>
+          <div id="overview-recent" class="table-wrap"></div>
+        </div>
+      </section>
+
+      <section id="tab-providers" class="tab-panel">
+        <div class="panel-head">
+          <h2>Fournisseurs OpenAI-compatibles</h2>
+          <span class="muted">Les clés restent dans .env, jamais dans le navigateur après saisie.</span>
+        </div>
+        <div id="providers-list" class="provider-list"></div>
+      </section>
+
+      <section id="tab-routing" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Profil actif</h2>
+            <span class="muted">Le mode auto classe la demande localement.</span>
+          </div>
+          <div class="row">
+            <label>
+              Profil global
+              <select id="routing-active"></select>
+            </label>
+            <button id="routing-active-save" type="button">Appliquer</button>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Profils et chaînes de repli</h2>
+            <span class="muted">Une cible par ligne : fournisseur/modèle</span>
+          </div>
+          <div id="profiles-list" class="profiles"></div>
+        </div>
+      </section>
+
+      <section id="tab-mcp" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Serveurs MCP</h2>
+            <span class="muted">Générés dans .hunter/mcp.json pour Claude Code.</span>
+          </div>
+          <div id="mcp-list" class="stack"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <h2 id="mcp-form-title">Ajouter un serveur MCP</h2>
+            <button id="mcp-reset" class="secondary small" type="button">Nouveau</button>
+          </div>
+          <form id="mcp-form" class="form-grid">
+            <label>Nom<input name="name" required pattern="[A-Za-z0-9_.-]{1,64}" /></label>
+            <label>Type
+              <select name="type">
+                <option value="stdio">stdio</option>
+                <option value="http">http</option>
+                <option value="sse">sse</option>
+              </select>
+            </label>
+            <label class="span-2">Description<input name="description" /></label>
+            <label class="span-2 stdio-only">Commande<input name="command" placeholder="npx" /></label>
+            <label class="span-2 stdio-only">Arguments (une par ligne)<textarea name="args" rows="3" placeholder="-y&#10;@modelcontextprotocol/server-github"></textarea></label>
+            <label class="span-2 http-only">URL<input name="url" placeholder="http://127.0.0.1:3000/mcp" /></label>
+            <label class="span-2 stdio-only">Env JSON<textarea name="env" rows="3" placeholder='{"GITHUB_TOKEN":"${GITHUB_TOKEN}"}'></textarea></label>
+            <label class="span-2 http-only">Headers JSON<textarea name="headers" rows="3" placeholder='{"Authorization":"Bearer ${MCP_TOKEN}"}'></textarea></label>
+            <label class="inline"><input type="checkbox" name="enabled" checked /> Activé</label>
+            <div class="row span-2">
+              <button type="submit">Enregistrer</button>
+              <button id="mcp-export" class="secondary" type="button">Télécharger la config Claude</button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section id="tab-plugins" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Plugins Claude Code</h2>
+            <span class="muted">Dossiers passés via --plugin-dir au lancement.</span>
+          </div>
+          <form id="plugin-form" class="row">
+            <label class="grow">Chemin du plugin<input name="path" placeholder="~/plugins/mon-plugin" required /></label>
+            <button type="submit">Ajouter</button>
+          </form>
+          <div id="plugins-list" class="stack"></div>
+        </div>
+      </section>
+
+      <section id="tab-logs" class="tab-panel">
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Journal des requêtes</h2>
+            <span class="muted">ID, profil, modèle, latence, tokens, erreurs.</span>
+          </div>
+          <div id="logs-table" class="table-wrap"></div>
+        </div>
+      </section>
+    </main>
+
+    <div id="login-modal" class="modal" hidden>
+      <form id="login-form" class="modal-card">
+        <h2>Accès administrateur</h2>
+        <p class="muted">HUNTER_ADMIN_TOKEN est configuré. Saisis-le pour ouvrir la console.</p>
+        <label>Jeton<input id="login-token" type="password" autocomplete="current-password" required /></label>
+        <button type="submit">Entrer</button>
+      </form>
+    </div>
+    <div id="toast" class="toast" hidden></div>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>

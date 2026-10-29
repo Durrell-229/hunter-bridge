@@ -300,10 +300,10 @@ function mergeAdjacent(messages) {
   return out;
 }
 
-function reasoningEffortFor(body, model) {
+function reasoningEffortFor(body, model, modelInfo = null) {
   const thinking = body?.thinking;
   if (!thinking || thinking.type !== 'enabled') return undefined;
-  const supported = KNOWN_MODELS[model]?.reasoning;
+  const supported = modelInfo?.reasoning || KNOWN_MODELS[model]?.reasoning;
   if (!Array.isArray(supported) || supported.length === 0) return undefined;
   const budget = Number(thinking.budget_tokens) || 0;
   if (supported.includes('high') && budget >= 16000) return 'high';
@@ -317,7 +317,7 @@ function reasoningEffortFor(body, model) {
  * Traduit une requête Anthropic Messages en requête Groq Chat Completions.
  * Retourne { body, meta }.
  */
-export function anthropicToGroq(body, config) {
+export function anthropicToGroq(body, config, options = {}) {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new BridgeError('Corps de requête JSON invalide', {
       status: 400,
@@ -332,11 +332,15 @@ export function anthropicToGroq(body, config) {
   }
 
   const inputTokens = estimateRequestTokens(body);
-  const groqModel = resolveModel(body.model, config);
-  const maxTokens = clampMaxTokens(body.max_tokens, groqModel, config, inputTokens);
+  const groqModel = options.model || resolveModel(body.model, config);
+  const modelInfo = options.modelInfo || KNOWN_MODELS[groqModel] || null;
+  const maxTokens = clampMaxTokens(body.max_tokens, groqModel, config, inputTokens, modelInfo);
 
   const messages = [];
-  const system = systemToText(body.system);
+  let system = systemToText(body.system);
+  if (options.systemSuffix) {
+    system = system ? `${system}\n\n${options.systemSuffix}` : String(options.systemSuffix);
+  }
   if (system) messages.push({ role: 'system', content: system });
   messages.push(...convertMessages(body.messages));
 
@@ -377,11 +381,11 @@ export function anthropicToGroq(body, config) {
     if (toolChoice) groq.tool_choice = toolChoice;
   }
 
-  const reasoningEffort = reasoningEffortFor(body, groqModel);
+  const reasoningEffort = reasoningEffortFor(body, groqModel, modelInfo);
   if (reasoningEffort) groq.reasoning_effort = reasoningEffort;
 
   const clientStream = Boolean(body.stream);
-  const upstreamStream = clientStream && config.streaming;
+  const upstreamStream = clientStream && config.streaming !== false;
   if (upstreamStream) {
     groq.stream = true;
     groq.stream_options = { include_usage: true };
@@ -392,6 +396,9 @@ export function anthropicToGroq(body, config) {
     meta: {
       requestedModel: body.model || config.model,
       groqModel,
+      upstreamModel: groqModel,
+      providerId: options.providerId || 'groq',
+      profile: options.profile || null,
       inputTokens,
       maxTokens,
       clientStream,
@@ -441,11 +448,12 @@ export function mapUsage(usage) {
 }
 
 export function mapStopReason(finishReason, hasTools = false) {
-  if (finishReason === 'length') return 'max_tokens';
-  if (finishReason === 'tool_calls' || finishReason === 'function_call') {
+  const reason = String(finishReason || '').toLowerCase();
+  if (reason === 'length' || reason === 'max_tokens') return 'max_tokens';
+  if (reason === 'tool_calls' || reason === 'function_call') {
     return hasTools ? 'tool_use' : 'end_turn';
   }
-  if (finishReason === 'content_filter') return 'end_turn';
+  if (reason === 'content_filter') return 'end_turn';
   if (hasTools) return 'tool_use';
   return 'end_turn';
 }
