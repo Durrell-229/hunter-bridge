@@ -562,7 +562,9 @@ async function doctor(config, runtime, opts, envFile, settingsPath) {
           const response = await simpleChat(candidate.provider, {
             model: candidate.modelId,
             prompt: 'Réponds uniquement : OK',
-            maxTokens: 64,
+            // Les modèles de raisonnement peuvent consommer les premiers
+            // tokens en réflexion avant d'écrire la réponse.
+            maxTokens: 256,
             reasoningEffort: candidate.model.reasoning?.includes('low') ? 'low' : undefined,
           });
           report.chat = response?.choices?.[0]?.message?.content ?? response;
