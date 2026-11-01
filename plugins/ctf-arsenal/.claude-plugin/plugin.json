@@ -1,0 +1,20 @@
+{
+  "name": "ctf-arsenal",
+  "version": "1.0.0",
+  "description": "Arsenal CTF/bug bounty pour Hunter Bridge : reconnaissance, web, pwn, reverse avec radare2, crypto, forensics, stégano et reporting. Tous les outils sont locaux.",
+  "author": {
+    "name": "Hunter Bridge"
+  },
+  "license": "MIT",
+  "keywords": [
+    "ctf",
+    "bug-bounty",
+    "security",
+    "reverse-engineering",
+    "radare2",
+    "pwn",
+    "web",
+    "crypto",
+    "forensics"
+  ]
+}

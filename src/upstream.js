@@ -213,7 +213,7 @@ export async function requestUpstream(
   body,
   { signal, timeoutMs, stream = false } = {},
 ) {
-  if (!provider?.apiKey) {
+  if (!provider?.apiKey && provider.id !== 'ollama') {
     throw new BridgeError(
       `${provider?.apiKeyEnv || 'Clé API'} manquante. Renseigne-la dans .env ou dans l’environnement.`,
       { status: 500, type: 'configuration_error' },
@@ -226,7 +226,8 @@ export async function requestUpstream(
     });
   }
 
-  const url = `${provider.baseUrl}/chat/completions`;
+  const urlPath = provider.id === 'ollama' ? '/api/chat' : '/chat/completions';
+  const url = `${provider.baseUrl}${urlPath}`;
   const adapted = adaptBody(provider, body);
   const variants = buildVariants(adapted);
   const effectiveTimeout =

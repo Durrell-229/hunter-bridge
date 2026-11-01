@@ -117,9 +117,15 @@ test('MCP : fichier généré en 600 et plugins scannés', () => {
   }
 });
 
-test('defaultSettings contient les quatre fournisseurs et les profils CTF', () => {
+test('defaultSettings contient les cinq fournisseurs et les profils CTF', () => {
   const settings = defaultSettings();
-  assert.deepEqual(Object.keys(settings.providers), ['groq', 'opencode', 'nvidia', 'gemini']);
+  assert.deepEqual(Object.keys(settings.providers), [
+    'groq',
+    'opencode',
+    'nvidia',
+    'gemini',
+    'ollama',
+  ]);
   assert.ok(settings.routing.profiles.ctf.chain.length >= 2);
   assert.ok(settings.routing.profiles.bugbounty.chain.length >= 2);
 });
