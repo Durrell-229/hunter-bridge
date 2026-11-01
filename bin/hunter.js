@@ -50,6 +50,7 @@ Options :
   --no-stream             désactive le streaming amont
   --no-mcp                ne génère pas --mcp-config
   --no-plugins            ne passe pas --plugin-dir
+  --install-tools         installe automatiquement les outils CTF/MCP manquants
   --log-level <level>     debug | info | warn | error
   --json                  sortie JSON (doctor, models)
   --chat                  test réel de génération (doctor)
@@ -135,7 +136,7 @@ async function main() {
   }
 
   if (command === 'init') {
-    init(settingsPath, envFile);
+    init(settingsPath, envFile, { installTools: Boolean(opts.installTools) });
     return;
   }
 
@@ -279,6 +280,10 @@ function parseArgs(argv, command = 'start') {
       case '--no-plugins':
         opts.noPlugins = true;
         break;
+      case '--install-tools':
+        opts.installTools = true;
+        break;
+        break;
       case '--json':
         opts.json = true;
         break;
@@ -320,7 +325,7 @@ function looksLikeClaudeModel(value) {
   return model.startsWith('claude-') || model.includes('claude');
 }
 
-function init(settingsPath, envFile) {
+function init(settingsPath, envFile, { installTools = false } = {}) {
   try {
     ensureSettings(settingsPath);
     if (!fs.existsSync(envFile)) {
@@ -333,6 +338,22 @@ function init(settingsPath, envFile) {
     console.log(`\n  ${SERVICE} initialisé`);
     console.log(`  config  ${settingsPath}`);
     console.log(`  env     ${envFile}`);
+
+    if (installTools) {
+      const bootstrap = path.join(PROJECT_ROOT, 'scripts', 'bootstrap.sh');
+      if (fs.existsSync(bootstrap)) {
+        fs.chmodSync(bootstrap, 0o755);
+        console.log('\n  Installation des composants manquants...');
+        try {
+          spawnSync('bash', [bootstrap], { stdio: 'inherit' });
+          console.log('\n  ✅ Installation terminée.');
+        } catch (installError) {
+          console.error(`\n  ⚠️  Installation partielle : ${installError.message}`);
+          console.log('     Vous pouvez relancer : hunter init --install-tools');
+        }
+      }
+    }
+
     console.log('\n  Renseigne les clés dans .env puis lance :');
     console.log('    npm run doctor -- --chat');
     console.log('    npm run claude -- --profile ctf\n');
