@@ -419,6 +419,16 @@ WREOF
 chmod +x "$WRAPPER"
 echo "✅ Wrapper créé : $WRAPPER"
 
+# --- Vérification agy CLI (optionnel, similaire à Claude Code) ---
+echo ""
+echo "--- Vérification agy CLI ---"
+if [[ -x "$HOME/.local/bin/agy" ]]; then
+  echo "✅ agy déjà présent : $HOME/.local/bin/agy"
+else
+  echo "⚠️  agy non trouvé (optionnel). Installez-le manuellement depuis votre source habituelle."
+  echo "   Puis : hunter agy --prompt='votre prompt'"
+fi
+
 # --- Résumé --------------------------------------------------------------------
 echo ""
 echo "============================================================"
