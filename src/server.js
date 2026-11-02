@@ -515,7 +515,7 @@ async function handleOpenAIChatCompletions(req, res, config, requestId, log, run
     record.providerId = candidate.providerId;
     record.modelId = candidate.modelId;
     // Normaliser le modèle pour le provider (ex: nvidia/nvidia/nemotron-... → cible canonique)
-    const requestBody = { ...openaiBody, model: candidate.modelId };
+    const requestBody = { ...openaiBody, model: candidate.modelId, stream: true };
     const routeConfig = {
       ...config,
       model: candidate.modelId,
@@ -562,6 +562,7 @@ async function handleOpenAIChatCompletions(req, res, config, requestId, log, run
     const isSse = contentType.includes('text/event-stream');
 
     if (isSse) {
+      // Le provider retourne déjà du SSE : relayer tel quel
       res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'connection': 'keep-alive' });
       res.flushHeaders?.();
       try {
@@ -579,6 +580,7 @@ async function handleOpenAIChatCompletions(req, res, config, requestId, log, run
       return;
     }
 
+    // Le provider retourne du JSON simple : envelopper dans du SSE pour hermes
     let json;
     try {
       json = await upstream.json();
@@ -594,8 +596,13 @@ async function handleOpenAIChatCompletions(req, res, config, requestId, log, run
       outputTokens: json.usage?.completion_tokens || 0,
     });
 
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(json));
+    res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'connection': 'keep-alive' });
+    res.flushHeaders?.();
+    // Envoyer le JSON comme un event SSE "message" puis un event [DONE]
+    const ssePayload = 'data: ' + JSON.stringify(json) + '\n\n';
+    res.write(ssePayload);
+    res.write('event: done\ndata: [DONE]\n\n');
+    res.end();
   } catch (error) {
     if (!record.finished) {
       const bridgeError = asBridgeError(error);
