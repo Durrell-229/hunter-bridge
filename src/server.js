@@ -241,6 +241,11 @@ async function handleRequest(req, res, config, log, startedAt, runtime) {
     return;
   }
 
+  if (path === '/v1/chat/completions' && req.method === 'POST') {
+    await handleOpenAIChatCompletions(req, res, config, requestId, log, runtime);
+    return;
+  }
+
   throw new BridgeError(`Route inconnue : ${req.method} ${path}`, {
     status: 404,
     type: 'not_found_error',
@@ -469,6 +474,132 @@ async function handleMessages(req, res, config, requestId, log, runtime) {
         error: bridgeError.message,
         status: bridgeError.status,
       });
+    }
+    throw error;
+  } finally {
+    cleanup();
+  }
+}
+
+async function handleOpenAIChatCompletions(req, res, config, requestId, log, runtime) {
+  checkProxyAuth(req, config);
+  const openaiBody = await readJson(req, config.bodyLimitBytes);
+
+  const routingBody = config.forceTarget ? { ...openaiBody, model: config.forceTarget } : openaiBody;
+  const decision = decide(runtime, routingBody);
+  if (!decision.candidates.length) throw routeError(runtime, decision);
+
+  log.debug(
+    `→ [openai] ${decision.profileId} ${decision.candidates.map((c) => c.target).join(' → ')} ` +
+      `stream=${Boolean(openaiBody.stream)} tools=${openaiBody.tools?.length || 0}`,
+  );
+
+  const record = beginRequest(runtime, { body: openaiBody, decision, requestId });
+  const controller = new AbortController();
+  let clientClosed = false;
+  res.on('close', () => {
+    if (!res.writableEnded) {
+      clientClosed = true;
+      controller.abort();
+    }
+  });
+
+  let fetched = null;
+  let selected = null;
+  let firstError = null;
+  const failures = [];
+  for (const candidate of decision.candidates) {
+    if (clientClosed) break;
+    selected = candidate;
+    noteAttempt(runtime, record, candidate);
+    record.providerId = candidate.providerId;
+    record.modelId = candidate.modelId;
+    // Normaliser le modèle pour le provider (ex: nvidia/nvidia/nemotron-... → cible canonique)
+    const requestBody = { ...openaiBody, model: candidate.modelId };
+    const routeConfig = {
+      ...config,
+      model: candidate.modelId,
+      smallModel: candidate.modelId,
+      maxOutputTokens: Math.min(
+        Number(config.maxOutputTokens || 32768),
+        Number(candidate.model.maxOutput || 32768),
+      ),
+    };
+    try {
+      fetched = await requestUpstream(candidate.provider, requestBody, {
+        signal: controller.signal,
+        timeoutMs: config.streamTimeoutMs,
+        stream: Boolean(openaiBody.stream),
+      });
+      break;
+    } catch (error) {
+      if (clientClosed) break;
+      if (!firstError) firstError = error;
+      failures.push(`${candidate.target}: ${redactSecrets(error?.message || String(error)).slice(0, 220)}`);
+      noteFailure(runtime, candidate, error);
+    }
+  }
+
+  if (!fetched) {
+    const baseError = firstError || new BridgeError('Aucun fournisseur disponible', { status: 500, type: 'configuration_error' });
+    const error = failures.length > 1
+      ? new BridgeError(`Tous les modèles de la chaîne ont échoué. ${failures.slice(0, 5).join(' | ')}`, {
+          status: Number(baseError.status) === 429 ? 429 : 502,
+          type: Number(baseError.status) === 429 ? 'rate_limit_error' : 'api_error',
+        })
+      : baseError;
+    finishRequest(runtime, record, { ok: false, providerId: selected?.providerId, modelId: selected?.modelId, error: error.message, status: error.status, skipProviderStats: true });
+    if (clientClosed) return;
+    throw error;
+  }
+
+  record.providerId = selected.providerId;
+  record.modelId = selected.modelId;
+
+  const { res: upstream, cleanup } = fetched;
+  try {
+    const contentType = String(upstream.headers.get('content-type') || '').toLowerCase();
+    const isSse = contentType.includes('text/event-stream');
+
+    if (isSse) {
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'connection': 'keep-alive' });
+      res.flushHeaders?.();
+      try {
+        for await (const chunk of bodyToAsyncIterable(upstream.body)) {
+          res.write(chunk);
+        }
+        res.end();
+      } catch (error) {
+        if (!clientClosed) {
+          const bridgeError = asBridgeError(error);
+          try { res.write('event: error\ndata: ' + JSON.stringify({error: {type: bridgeError.type, message: String(bridgeError.message)}}) + '\n\n'); } catch {}
+          try { res.end(); } catch {}
+        }
+      }
+      return;
+    }
+
+    let json;
+    try {
+      json = await upstream.json();
+    } catch (error) {
+      throw new BridgeError(`Réponse ${selected.provider.label} invalide : ${error?.message || error}`, { status: 502, type: 'api_error', cause: error });
+    }
+
+    finishRequest(runtime, record, {
+      ok: true,
+      providerId: selected.providerId,
+      modelId: selected.modelId,
+      inputTokens: json.usage?.prompt_tokens || 0,
+      outputTokens: json.usage?.completion_tokens || 0,
+    });
+
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(json));
+  } catch (error) {
+    if (!record.finished) {
+      const bridgeError = asBridgeError(error);
+      finishRequest(runtime, record, { ok: false, providerId: selected.providerId, modelId: selected.modelId, error: bridgeError.message, status: bridgeError.status });
     }
     throw error;
   } finally {
