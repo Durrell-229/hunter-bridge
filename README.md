@@ -93,6 +93,15 @@ hunter --profile ctf
 
 `hunter` sans sous-commande lance Claude Code ; `hunter start`, `hunter doctor`, etc. restent disponibles. Le proxy utilise toujours `hunter.config.json` et `.env` du pont, mais le répertoire de travail de Claude Code reste celui depuis lequel tu as lancé la commande.
 
+Le lanceur `hunter` installé par `scripts/bootstrap.sh` ajoute :
+
+- la détection des fichiers `.ovpn` et le lancement d’OpenVPN en **split tunnel** : Internet reste sur la connexion locale, le VPN ne porte que le trafic des cibles ;
+- `hunter vpn-reset` pour arrêter les instances OpenVPN en double et repartir proprement ;
+- `HUNTER_SKIP_VPN=1` pour ignorer complètement le VPN ;
+- `HUNTER_VPN_FULL_TUNNEL=1` pour router tout le trafic via le VPN ;
+- `hunter rea …` pour utiliser le CLI REA sans charger ses 207 outils MCP dans Claude Code ;
+- `HUNTER_MCP_STRICT=0` pour réautoriser les serveurs MCP du niveau utilisateur (dont `rea`).
+
 Sans alias, la commande équivalente est :
 
 ```bash
@@ -368,6 +377,22 @@ Hunter Bridge journalise le fallback et le cooldown dans le dashboard.
 - Vérifie que le fournisseur est activé.
 - Vérifie que le modèle supporte les outils si Claude Code en envoie.
 - Regarde `Candidats écartés` dans l’erreur ou la dernière décision du dashboard.
+
+### Contexte trop gros / `410 Model ... has been deprecated`
+
+Claude Code charge aussi les serveurs MCP du niveau utilisateur. Avec `rea` (207 outils), la requête peut dépasser **250k tokens** : trop pour les modèles NVIDIA (128k), le routeur bascule alors vers un modèle OpenCode obsolète. Hunter lance Claude Code avec `--strict-mcp-config` et les 7 serveurs de `hunter.config.json` (≈120 outils, ≈55k tokens). Pour utiliser `rea` en MCP, il faut un modèle à 1M de contexte et `HUNTER_MCP_STRICT=0` ; sinon utilise `hunter rea …`.
+
+### NVIDIA `fetch failed` / Internet coupé après le VPN
+
+Plusieurs instances OpenVPN qui se disputent les routes coupent Internet. `hunter` détecte les doublons et propose de les arrêter. Sinon :
+
+```bash
+hunter vpn-reset
+# ou
+sudo pkill -x openvpn
+```
+
+Le lanceur ajoute `--pull-filter ignore redirect-gateway` pour garder Internet direct. Utilise `HUNTER_VPN_FULL_TUNNEL=1` si tu veux au contraire tout router dans le VPN.
 
 ### Dashboard inaccessible
 

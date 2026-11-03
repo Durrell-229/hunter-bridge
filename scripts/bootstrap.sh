@@ -374,63 +374,14 @@ echo ""
 echo "--- Wrapper hunter global ---"
 
 WRAPPER="$HOME/.local/bin/hunter"
-cat > "$WRAPPER" <<WREOF
-#!/usr/bin/env bash
-# Hunter Bridge — lance Claude Code dans le dossier courant.
-set -euo pipefail
-
-ROOT="${HUNTER_ROOT}"
-NODE_BIN="${HUNTER_NODE:-node}"
-ENTRY="\$ROOT/bin/hunter.js"
-
-export HUNTER_TOOLS="${HUNTER_TOOLS_DIR}"
-export PATH="\$HUNTER_TOOLS/bin:\$HOME/.local/bin:\$PATH"
-
-if [[ ! -f "\$ENTRY" ]]; then
-  echo "Hunter Bridge introuvable : \$ENTRY" >&2
-  echo "Définis HUNTER_ROOT=/chemin/vers/hunter-bridge"
+WRAPPER_SRC="$ROOT_DIR/scripts/hunter-wrapper.sh"
+if [[ ! -f "$WRAPPER_SRC" ]]; then
+  echo "❌ Source du wrapper introuvable : $WRAPPER_SRC" >&2
   exit 1
 fi
-
-command_name="claude"
-profile_id="auto"
-
-if [[ \$# -gt 0 ]]; then
-  case "\$1" in
-    start|up|claude|doctor|models|env|init|help|version)
-      command_name="\$1"
-      shift
-      ;;
-    --profile)
-      profile_id="\${2:-auto}"
-      shift 2
-      remaining=()
-      for a in "\$@"; do
-        if [[ "\$a" != "--profile" && "\$a" != "--profile="* ]]; then remaining+=("\$a"); fi
-      done
-      set -- "${remaining[@]}"
-      ;;
-  esac
-fi
-
-if [[ "\$profile_id" != "auto" ]]; then
-  CONFIG="\$ROOT/hunter.config.json"
-  if [[ -f "\$CONFIG" ]]; then
-    sed -i "s/\"activeProfile\": \"[^\"]*\"/\"activeProfile\": \"\$profile_id\"/" "\$CONFIG"
-    echo "Profil '\$profile_id' activé dans \$CONFIG"
-  fi
-fi
-
-export HUNTER_ENV_FILE="\$ROOT/.env"
-
-args=(
-  "claude"
-  --config "\$ROOT/hunter.config.json"
-  --allow-dangerously-skip-permissions
-)
-
-exec "\$NODE_BIN" "\$ENTRY" "\${args[@]}" "\$@"
-WREOF
+sed -e "s|__HUNTER_ROOT__|$HUNTER_ROOT|g" \
+    -e "s|__HUNTER_TOOLS__|$HUNTER_TOOLS_DIR|g" \
+    "$WRAPPER_SRC" > "$WRAPPER"
 chmod +x "$WRAPPER"
 echo "✅ Wrapper créé : $WRAPPER"
 

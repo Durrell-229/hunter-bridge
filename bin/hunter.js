@@ -283,6 +283,11 @@ function parseArgs(argv, command = 'start') {
       case '--install-tools':
         opts.installTools = true;
         break;
+      case '--allow-dangerously-skip-permissions':
+      case '--dangerously-skip-permissions':
+        // Option Claude Code : on la transmet sans interrompre l'analyse
+        // des options Hunter qui suivent (--profile, --no-mcp, etc.).
+        opts.rest.push(name);
         break;
       case '--json':
         opts.json = true;
@@ -439,7 +444,15 @@ async function runClaude(config, runtime, opts) {
         runtime.settings.mcp?.servers || [],
         process.env,
       );
-      if (mcp.written) args.unshift('--mcp-config', mcp.path);
+      if (mcp.written) {
+        args.unshift('--mcp-config', mcp.path);
+        // Sans --strict-mcp-config, Claude Code charge aussi les serveurs MCP
+        // du niveau utilisateur (rea = 207 outils). Le prompt dépasse alors
+        // 250k tokens et aucun modèle NVIDIA (128k) ne peut répondre.
+        if (process.env.HUNTER_MCP_STRICT !== '0') {
+          args.unshift('--strict-mcp-config');
+        }
+      }
     } catch (error) {
       console.error(`⚠ Configuration MCP non générée : ${error.message}`);
     }
