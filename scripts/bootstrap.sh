@@ -176,7 +176,7 @@ echo "Installation des bibliothèques Python..."
 "$PY_VENV/bin/pip" install \
   pwntools z3-solver capstone unicorn keystone-engine pyelftools \
   ROPgadget yara-python volatility3 scapy pycryptodome requests beautifulsoup4 pytsk3 \
-  sherlock-project maigret mvt angr \
+  sherlock-project maigret mvt angr logparser \
   >/tmp/hunter-pip-install.log 2>&1 || {
     echo "⚠️  Certaines bibliothèques Python n'ont pu s'installer (voir /tmp/hunter-pip-install.log)"
   }
