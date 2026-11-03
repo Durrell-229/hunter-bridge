@@ -98,6 +98,11 @@ install_system_tools() {
     strings
     ffuf
     jq
+    yara
+    bulk_extractor
+    plistutil
+    sqlite3
+    jadx
   )
 
   case "$PKG_MGR" in
@@ -166,21 +171,31 @@ fi
 # Mettre à jour pip
 "$PY_VENV/bin/pip" install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
 
-# Installer les bibliothèques Python CTF (certaines peuvent échouer, c'est ok)
+# Installer les bibliothèques Python CTF/Forensics/OSINT (certaines peuvent échouer, c'est ok)
 echo "Installation des bibliothèques Python..."
 "$PY_VENV/bin/pip" install \
   pwntools z3-solver capstone unicorn keystone-engine pyelftools \
   ROPgadget yara-python volatility3 scapy pycryptodome requests beautifulsoup4 pytsk3 \
+  sherlock-project maigret mvt angr \
   >/tmp/hunter-pip-install.log 2>&1 || {
     echo "⚠️  Certaines bibliothèques Python n'ont pu s'installer (voir /tmp/hunter-pip-install.log)"
   }
 
 # Vérifier les outils Python critiques
-for tool in pwn ROPgadget vol; do
+for tool in pwn ROPgadget vol sherlock maigret mvt-ios mvt-android angr; do
   if [[ -x "$PY_VENV/bin/$tool" ]] || "$PY_VENV/bin/python" -c "import $tool" 2>/dev/null; then
     echo "✅ Python : $tool"
   else
     echo "⚠️  Python : $tool (optionnel, installation manuelle possible)"
+  fi
+done
+
+# Vérifier les outils forensiques système
+for tool in foremost exiftool binwalk strings plistutil sqlite3 rg jadx; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    echo "✅ Système : $tool"
+  else
+    echo "⚠️  Système : $tool (optionnel, installation manuelle possible)"
   fi
 done
 
