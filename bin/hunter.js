@@ -799,6 +799,28 @@ function claudeEnvVars(config, baseUrl, runtime, { maskSecret = false } = {}) {
     DISABLE_TELEMETRY: '1',
     DISABLE_ERROR_REPORTING: '1',
     HUNTER_PROFILE: runtime.settings.routing.activeProfile,
+    ...(() => {
+      // `sudo` local : dans Claude Code, les commandes root (nmap -sS, -sU…)
+      // ne doivent pas bloquer sur une invite de mot de passe.
+      const hunterBin = path.join(os.homedir(), '.local', 'share', 'hunter', 'bin');
+      const sudoHelper = path.join(hunterBin, 'sudo');
+      const sudoAskpass = path.join(hunterBin, 'sudo-askpass');
+      if (!fs.existsSync(sudoHelper) || !fs.existsSync(sudoAskpass)) return {};
+      return {
+        PATH: `${hunterBin}${path.delimiter}${process.env.PATH || ''}`,
+        HUNTER_SUDO_AUTO: process.env.HUNTER_SUDO_AUTO ?? '1',
+        SUDO_ASKPASS: process.env.SUDO_ASKPASS || sudoAskpass,
+      };
+    })(),
+    ...(() => {
+      // Proxychains pour chisel (tunnel SOCKS5 via serveur distant)
+      const proxychainsConf = process.env.PROXYCHAINS_CONF_FILE ||
+        path.join(os.homedir(), '.local', 'share', 'hunter', 'etc', 'proxychains.conf');
+      if (!fs.existsSync(proxychainsConf)) return {};
+      return {
+        PROXYCHAINS_CONF_FILE: proxychainsConf,
+      };
+    })(),
   };
 }
 

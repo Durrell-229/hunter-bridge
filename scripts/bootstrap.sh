@@ -369,6 +369,25 @@ ENVEOF
   echo "✅ .env créé (modifiez les clés API)"
 fi
 
+# --- Installation de proxychains (routage des outils via le tunnel) ----------
+install_proxychains() {
+  if command -v proxychains4 >/dev/null 2>&1; then
+    echo "✅ proxychains4 déjà installé"
+    return 0
+  fi
+  echo ""
+  echo "--- Installation de proxychains ---"
+  case "$PKG_MGR" in
+    pacman) sudo pacman -S --noconfirm proxychains-ng || echo "⚠️  Échec proxychains-ng (à installer manuellement)" ;;
+    apt)    sudo apt-get install -y proxychains4 || echo "⚠️  Échec proxychains4 (à installer manuellement)" ;;
+    dnf)    sudo dnf install -y proxychains-ng || echo "⚠️  Échec proxychains-ng (à installer manuellement)" ;;
+    *)      echo "⚠️  Gestionnaire inconnu : installez proxychains-ng manuellement" ;;
+  esac
+  command -v proxychains4 >/dev/null 2>&1 \
+    && echo "✅ proxychains4 installé" \
+    || echo "⚠️  proxychains4 toujours absent — hunter-tunnel marchera, mais pas le préfixe proxychains4"
+}
+
 # --- Créer le wrapper hunter global -------------------------------------------
 echo ""
 echo "--- Wrapper hunter global ---"
@@ -383,7 +402,82 @@ sed -e "s|__HUNTER_ROOT__|$HUNTER_ROOT|g" \
     -e "s|__HUNTER_TOOLS__|$HUNTER_TOOLS_DIR|g" \
     "$WRAPPER_SRC" > "$WRAPPER"
 chmod +x "$WRAPPER"
-echo "✅ Wrapper créé : $WRAPPER"
+
+# Câblage durci : chisel/colab de `hunter` passent par hunter-tunnel
+# (auth obligatoire, bind loopback, proxychains sans localnet privé).
+# Idempotent : les anciens appels sont remplacés une seule fois.
+python3 - <<'PY'
+from pathlib import Path
+p = Path.home() / '.local' / 'bin' / 'hunter'
+txt = p.read_text()
+if 'hunter_tunnel auto' not in txt:
+    # claude|agy|hermes et vpn-reset (même bloc, 2 paires identiques)
+    txt = txt.replace(
+        '      start_chisel_server || true\n      start_colab_receiver || true',
+        '      hunter_tunnel auto || true',
+    )
+    # chisel-start / colab-start (indentation 6 espaces)
+    txt = txt.replace(
+        '      start_chisel_server || exit 1\n      exit 0',
+        '      hunter_tunnel start || exit 1\n      exit 0',
+    )
+    txt = txt.replace(
+        '      stop_chisel_server\n      exit 0',
+        '      hunter_tunnel stop\n      exit 0',
+    )
+    txt = txt.replace(
+        '      chisel_server_status\n      exit 0',
+        '      hunter_tunnel status\n      exit 0',
+    )
+    txt = txt.replace(
+        '      start_chisel_server || true\n      start_colab_receiver || exit 1\n      exit 0',
+        '      hunter_tunnel start || true\n      hunter_tunnel colab-start || exit 1\n      exit 0',
+    )
+    txt = txt.replace(
+        '      stop_colab_receiver\n      exit 0',
+        '      hunter_tunnel colab-stop\n      exit 0',
+    )
+    txt = txt.replace(
+        '      colab_status\n      exit 0',
+        '      hunter_tunnel colab-status\n      exit 0',
+    )
+    # Injection de la fonction délégante juste après REA_BIN
+    needle = 'REA_BIN="${REA_BIN:-$(command -v rea 2>/dev/null || true)}"'
+    inject = needle + r'''
+
+# Tunnel durci : toutes les commandes chisel/colab passent par hunter-tunnel
+hunter_tunnel() {
+  local t="${HUNTER_TUNNEL_BIN:-$HOME/.local/bin/hunter-tunnel}"
+  if [[ -x "$t" ]]; then
+    "$t" "$@"
+  else
+    echo "[WARN] hunter-tunnel absent ($t) - tunnel non demarre." >&2
+    return 0
+  fi
+}'''
+    if needle not in txt:
+        raise SystemExit('ancre REA_BIN introuvable dans le wrapper installe')
+    txt = txt.replace(needle, inject, 1)
+    p.write_text(txt)
+    print('wrapper installe: câblage hunter-tunnel appliqué')
+else:
+    print('wrapper installe: câblage déjà présent')
+PY
+chmod +x "$WRAPPER"
+echo "✅ Wrapper créé et câblé vers hunter-tunnel : $WRAPPER"
+
+# --- Installer hunter-tunnel (chisel durci + proxychains + Colab) --------------
+if [[ -f "$ROOT_DIR/scripts/hunter-tunnel.sh" ]]; then
+  install -m 755 "$ROOT_DIR/scripts/hunter-tunnel.sh" "$HOME/.local/bin/hunter-tunnel"
+  echo "✅ hunter-tunnel installé : $HOME/.local/bin/hunter-tunnel"
+  echo "   Démarrage   : hunter-tunnel start"
+  echo "   Anonymat    : hunter-tunnel proxy-check"
+  echo "   Colab       : hunter-tunnel colab-start"
+else
+  echo "⚠️  scripts/hunter-tunnel.sh introuvable — tunnel non installé"
+fi
+
+install_proxychains
 
 # --- Vérification agy CLI (optionnel, similaire à Claude Code) ---
 echo ""

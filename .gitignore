@@ -4,6 +4,13 @@ node_modules/
 !.env.example
 hunter.config.json
 .hunter/
+
+# Secrets locaux (mot de passe sudo Hunter, etc.)
+sudo-pass
+.sudo-pass
+*.pass
+.env.local
+
 *.log
 .DS_Store
 coverage/

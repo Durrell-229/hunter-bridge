@@ -97,6 +97,10 @@ Le lanceur `hunter` installé par `scripts/bootstrap.sh` ajoute :
 
 - la détection des fichiers `.ovpn` et le lancement d’OpenVPN en **split tunnel** : Internet reste sur la connexion locale, le VPN ne porte que le trafic des cibles ;
 - `hunter vpn-reset` pour arrêter les instances OpenVPN en double et repartir proprement ;
+- `hunter vpn-route 192.168.5.0/24` pour envoyer un sous-réseau de cibles dans le tunnel sans couper Internet ;
+- `HUNTER_VPN_ROUTES=192.168.5.0/24,10.10.0.0/16` pour ajouter ces routes automatiquement au démarrage du VPN ;
+- `hunter sudo-setup` / `hunter sudo-clear` pour installer ou oublier le mot de passe sudo local (jamais commité) ;
+- **Chisel / Proxychains** : tunnel SOCKS5 via serveur distant — `HUNTER_CHISEL_SERVER=user@host:port` + `hunter chisel-start` ;
 - `HUNTER_SKIP_VPN=1` pour ignorer complètement le VPN ;
 - `HUNTER_VPN_FULL_TUNNEL=1` pour router tout le trafic via le VPN ;
 - `hunter rea …` pour utiliser le CLI REA sans charger ses 207 outils MCP dans Claude Code ;
@@ -393,6 +397,199 @@ sudo pkill -x openvpn
 ```
 
 Le lanceur ajoute `--pull-filter ignore redirect-gateway` pour garder Internet direct. Utilise `HUNTER_VPN_FULL_TUNNEL=1` si tu veux au contraire tout router dans le VPN.
+
+### Cible VPN injoignable : tous les ports `filtered`
+
+En split tunnel, seuls `10.8.0.0/24` (le réseau du tunnel) est routé. Une cible comme `192.168.5.65` sort par la passerelle locale et reste filtrée. Vérifie :
+
+```bash
+ip route get 192.168.5.65
+# si la réponse contient "dev wlo1" au lieu de "dev tun0", la cible ne passe pas par le VPN
+```
+
+Ajoute la route du sous-réseau de la cible sans couper Internet :
+
+```bash
+hunter vpn-route 192.168.5.0/24
+ip route get 192.168.5.65   # doit maintenant indiquer dev tun0
+ping -c 2 192.168.5.65
+```
+
+Pour rendre la route permanente à chaque connexion VPN, exporte `HUNTER_VPN_ROUTES` avant de lancer Hunter :
+
+```bash
+HUNTER_VPN_ROUTES=192.168.5.0/24 hunter
+```
+
+Si le serveur VPN ne route pas ce sous-réseau, passe en tunnel complet (tout le trafic, y compris les API IA, passe par le VPN) :
+
+```bash
+HUNTER_VPN_FULL_TUNNEL=1 hunter vpn-reset
+```
+
+La passerelle utilisée est `10.8.0.1` par défaut ; surcharge-la avec `HUNTER_VPN_GATEWAY=10.8.0.1`. Pour retirer une route : `sudo ip route del 192.168.5.0/24`.
+
+### Sudo sans mot de passe pour `nmap -sS/-sU`
+
+```bash
+hunter sudo-setup    # demande le mot de passe une fois, stocke-le en mode 600
+hunter sudo-clear    # oublie le mot de passe
+```
+
+Le mot de passe est stocké dans `~/.config/hunter/sudo-pass` (hors dépôt, ignoré par git). Le helper `~/.local/share/hunter/bin/sudo` n’est actif que si `HUNTER_SUDO_AUTO=1` ; Hunter l’exporte pour Claude Code et les serveurs MCP. Le MCP `ctf` utilise automatiquement `sudo` pour les options Nmap qui exigent root (`-sS`, `-sU`, `-O`, etc.). Sécurité : tout processus lancé dans ta session peut utiliser ce mot de passe ; `hunter sudo-clear` le supprime.
+
+### Chisel Server + Cloudflare Tunnel — Accès public auto pour IA distantes (Zéro config, zéro VPS)
+
+**But** : Tu es sur le VPN CTF (autorisé). Tu veux donner une **URL publique** à n'importe quelle IA (ChatGPT, Claude Web, Gemini, etc.) pour qu'elle puisse scanner/attaquer le réseau CTF **via ta machine** — sans VPS, sans config manuelle.
+
+**Architecture** :
+```
+[IA distante] --(HTTPS/WSS public)--> [Cloudflare Tunnel] --> [Chisel Server LOCAL:8080]
+                                                                       |
+                                                                       +--> SOCKS5 plain (1080) → proxychains4 pour tes outils locaux
+                                                                       +--> Reverse tunnels (R:8081:socks) → réseau VPN (192.168.5.0/24, etc.)
+```
+
+**Zéro config** : Tout démarre auto avec `hunter` / `hunter claude` / `hunter start` :
+1. VPN connecté (split tunnel)
+2. **Chisel Server** démarre sur `127.0.0.1:8080` (HTTP/WebSocket + SOCKS5 via upgrade, `--reverse` activé)
+3. **Chisel Client local** connecte au serveur local → expose **SOCKS5 plain sur `127.0.0.1:1080`** (pour `proxychains4`)
+4. **Cloudflared Tunnel** créé auto → URL publique `https://xxx.trycloudflare.com`
+5. URL affichée dans `hunter chisel-status` et sauvée dans `/tmp/hunter-chisel-public-url.txt`
+
+**Commandes** :
+```bash
+# Tout est auto avec hunter/hunter claude, mais commandes dispo :
+hunter chisel-start     # Lance server + client local + tunnel cloudflare
+hunter chisel-status    # Affiche l'URL PUBLIQUE à donner à l'IA
+hunter chisel-stop      # Arrête tout
+
+# Pour tes outils locaux (nmap, ffuf, curl, sqlmap...) via le VPN :
+proxychains4 -f ~/.local/share/hunter/etc/proxychains.conf nmap -sT -Pn 192.168.5.65
+```
+
+**Donner l'accès à une IA distante** :
+```bash
+# L'URL publique (ex: https://abc123.trycloudflare.com)
+# L'IA fait simplement :
+chisel client https://abc123.trycloudflare.com R:8081:socks
+# Puis dans l'IA : proxychains4 -f <config> nmap -sT -Pn 192.168.5.65
+```
+L'IA n'a **pas besoin de ton VPN**, juste de l'URL. Le trafic passe : IA → Cloudflare → Ton Chisel Server → Ton VPN → Cible CTF.
+
+**Prérequis** (auto-installés par `scripts/bootstrap.sh`) :
+- `chisel` (binaire dans `~/.local/share/hunter/bin/`)
+- `cloudflared` (binaire dans `~/.local/share/hunter/bin/`)
+- `proxychains4` (`sudo pacman -S proxychains-ng` / `apt install proxychains4`)
+
+**Variables d'env** (optionnelles, dans `.env`) :
+```bash
+CHISEL_SERVER_PORT=8080      # Port HTTP/WebSocket chisel server (défaut 8080)
+CHISEL_SOCKS_PORT=1080       # Port SOCKS5 plain pour proxychains (défaut 1080)
+CHISEL_REVERSE_PORT=8081     # Port reverse pour l'IA (défaut 8080)
+```
+
+**Sécurité** : Le tunnel Cloudflare est éphémère (nouvelle URL à chaque démarrage). L'IA ne voit que l'URL publique, pas ton IP locale ni ton VPN. Tu peux arrêter le tunnel n'importe quand avec `hunter chisel-stop`.
+
+### Colab Worker — Google Colab comme accélérateur download/forensic
+
+**But** : Utiliser la bande passante, le CPU/GPU et le stockage gratuit de Google Colab pour :
+1. **Télécharger** de gros artefacts (images disque, dumps mémoire, ISOs, PCAPs) via ton VPN CTF
+2. **Analyser** en forensic (binwalk, volatility, strings, foremost, autopsy, etc.)
+3. **Renvoyer** uniquement les artefacts pertinents (fichiers extraits, rapports, IOCs) sur ton PC
+4. **Traiter** localement avec tes IA (Hunter/Claude Code) sans saturer ta connexion
+
+**Architecture** :
+```
+[Google Colab] --(chisel client)--> [Cloudflare Tunnel] --> [Chisel Server LOCAL:8080]
+                                      |                          |
+                                      |                          +--> SOCKS5 (1080) → Colab navigue via ton VPN
+                                      |                          +--> Reverse 8888 → HTTP Receiver local (uploads)
+                                      |                          +--> Reverse 8889 → Raw TCP (gros fichiers)
+                                      |
+                                      +--> Colab: requests.get(..., proxies={"http":"socks5h://127.0.0.1:1080"})
+                                      +--> Colab: télécharge gros-fichier.img (Go) depuis cible CTF
+                                      +--> Colab: binwalk/volatility/strings → extrait artefacts
+                                      +--> Colab: POST http://127.0.0.1:8888/upload (via tunnel) → Ton PC
+                                      +--> Ton PC: reçoit dans ~/hunter-colab-artifacts/raw/
+                                      +--> Tes IA locales: analysent immédiatement
+```
+
+**Zéro config** : Tout démarre auto avec `hunter` / `hunter claude` :
+```bash
+hunter
+# ou
+hunter colab-start
+```
+
+**Récupère la commande pour Colab** :
+```bash
+hunter colab-status
+# Affiche la commande complète à copier-coller dans une cellule Google Colab
+```
+
+**Commandes** :
+```bash
+hunter colab-start     # Lance receiver HTTP + génère commande Colab (auto avec hunter)
+hunter colab-status    # Affiche URL publique + commande Colab + artefacts reçus
+hunter colab-stop      # Arrête receiver
+```
+
+**Dans Google Colab (copie-collé depuis `hunter colab-status`)** :
+```python
+# Cellule 1 : Installe chisel + lance tunnel (garde la cellule en exécution)
+! wget -q https://github.com/jpillora/chisel/releases/download/v1.12.0/chisel_1.12.0_linux_amd64.gz -O chisel.gz
+! gunzip -f chisel.gz && chmod +x chisel
+! ./chisel client https://xxx.trycloudflare.com \
+    1080:socks \
+    R:8888:127.0.0.1:8888 \
+    R:8889:127.0.0.1:8889 \
+    --fingerprint chrome --keepalive 10s
+
+# Cellule 2 : Tes scripts download/forensic (exécute autant de fois que voulu)
+import requests, os
+proxies = {"http": "socks5h://127.0.0.1:1080", "https": "socks5h://127.0.0.1:1080"}
+
+# 1. Télécharge gros fichier via TON VPN (ex: image disque 10 Go)
+r = requests.get("http://192.168.5.65/disk.img", proxies=proxies, stream=True)
+with open("/content/disk.img", "wb") as f:
+    for chunk in r.iter_content(1024*1024): f.write(chunk)
+
+# 2. Analyse forensic (CPU/GPU Colab gratuit)
+! binwalk -e /content/disk.img
+! volatility -f /content/disk.img linux.pslist > /content/pslist.txt
+! strings /content/disk.img | grep -iE "password|flag|secret|key" > /content/creds.txt
+
+# 3. Envoie artefacts vers TON PC (instantané via tunnel)
+for f in ["_disk.img.extracted/file1", "pslist.txt", "creds.txt"]:
+    requests.post("http://127.0.0.1:8888/upload", files={"file": open(f, "rb")}, proxies=proxies)
+
+# 4. Gros fichiers en raw (plus rapide) :
+# ! curl -X POST --data-binary @gros.fichier http://127.0.0.1:8888/upload?filename=gros.fichier --socks5 127.0.0.1:1080
+```
+
+**Sur ton PC** :
+```bash
+# Les artefacts arrivent dans :
+ls ~/hunter-colab-artifacts/raw/
+# pslist.txt  creds.txt  file1  ...
+
+# Tes IA locales (Hunter/Claude) les traitent immédiatement
+hunter claude --profile ctf -- --print "Analyse ~/hunter-colab-artifacts/raw/creds.txt"
+```
+
+**Variables d'env** (optionnelles, dans `.env`) :
+```bash
+COLAB_RECEIVER_PORT=8888       # Port HTTP receiver local (défaut 8888)
+COLAB_RAW_PORT=8889            # Port raw TCP (défaut 8889)
+COLAB_ARTIFACTS_DIR=~/hunter-colab-artifacts  # Dossier artefacts (défaut ~/hunter-colab-artifacts)
+```
+
+**Sécurité** :
+- Tunnel Cloudflare éphémère (nouvelle URL à chaque `hunter`)
+- Colab n'a **pas** accès à ton PC hors tunnel (seulement port 8888/8889 reverse)
+- Tu contrôles tout : `hunter colab-stop` coupe l'accès instantanément
+- Artefacts stockés localement, jamais dans le cloud
 
 ### Dashboard inaccessible
 

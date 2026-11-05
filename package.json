@@ -15,7 +15,7 @@
     "models": "node bin/hunter.js models",
     "env": "node bin/hunter.js env",
     "init": "node bin/hunter.js init",
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=18.17"
